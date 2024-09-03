@@ -2,6 +2,7 @@ import { vars, type HardhatUserConfig } from "hardhat/config";
 import { PRIVATE_KEY } from "./env";
 import "@nomicfoundation/hardhat-toolbox";
 
+const COINMARKETCAP_API_KEY = vars.get("COINMARKETCAP_API_KEY");
 const ETHERSCAN_API_KEY = vars.get("ETHERSCAN_API_KEY");
 const ALCHEMY_API_KEY = vars.get("ALCHEMY_API_KEY");
 
@@ -24,6 +25,10 @@ const config: HardhatUserConfig = {
       mainnet: `${ETHERSCAN_API_KEY}`,
       sepolia: `${ETHERSCAN_API_KEY}`,
     },
+  },
+  gasReporter: {
+    enabled: true,
+    coinmarketcap: `${COINMARKETCAP_API_KEY}`,
   },
   networks: {
     hardhat: {
