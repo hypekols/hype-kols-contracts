@@ -4,8 +4,8 @@ pragma solidity ^0.8.20;
 struct Escrow {
     uint256 amount;
     address creator;
-    uint48 resolution_timestamp;
-    uint16 wormhole_chain_id;
+    uint48 allowPlatformResolutionTimestamp;
+    uint16 wormholeChainId;
     bytes32 benificiary;
 }
 
