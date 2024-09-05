@@ -19,13 +19,13 @@ import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
  */
 contract CrossChainEscrow is Ownable, EIP712, Nonces {
     error WormholeNotRegistered();
-    error EscrowDoesNotExist();
     error UnauthorizedSender();
     error InvalidResolution();
     error InvalidSignature();
     error CannotResolveYet();
     error AlreadyStarted();
     error InvalidAddress();
+    error EscrowNotFound();
 
     // #######################################################################################
 
@@ -145,7 +145,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
     }
 
     modifier onlyExists(uint256 _escrowId) {
-        if (_escrow[_escrowId].creator == address(0)) revert EscrowDoesNotExist();
+        if (_escrow[_escrowId].creator == address(0)) revert EscrowNotFound();
         _;
     }
 

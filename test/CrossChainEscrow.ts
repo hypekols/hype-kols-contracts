@@ -1,21 +1,22 @@
-import { CrossChainEscrow } from "./../typechain-types/contracts/CrossChainEscrow";
-import { WormholeRelayer } from "./../typechain-types/contracts/test/WormholeRelayer";
 import { time, loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
-import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { expect } from "chai";
 import hre from "hardhat";
 import { ethers } from "hardhat";
-import { USDC } from "../typechain-types";
-import { BigNumberish, Signature, Wallet } from "ethers";
+import { BigNumberish, Signature } from "ethers";
+import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 
 const wormholeSource = 10002;
 const wormholeDest = 10003;
 const wormholeDestFee = 20000;
 const wormholeDestRelay = ethers.randomBytes(32);
 
+const threeDays = BigInt(60 * 60 * 24 * 3);
+
 const initialOrgBalance = ethers.parseUnits("1000000", 6);
 
 describe("CrossChainEscrow", function () {
+    type Fixture = Awaited<ReturnType<typeof deployFixture>>;
+
     async function deployFixture() {
         const network = await ethers.provider.getNetwork();
         const chainId = network.chainId;
@@ -135,11 +136,9 @@ describe("CrossChainEscrow", function () {
         };
     }
 
-    async function deployFixtureWithDirectEscrow() {
-        const fixture = await loadFixture(deployFixture);
-
+    async function addEscrow(fixture: Fixture, bridged: boolean) {
         const escrowReference = ethers.randomBytes(32);
-        const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+        const beneficiary = bridged ? ethers.randomBytes(32) : ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
         const amount = ethers.parseUnits("100", 6);
         const serviceFee = ethers.parseUnits("1", 6);
         const nonce = 0;
@@ -160,7 +159,7 @@ describe("CrossChainEscrow", function () {
                 {
                     escrowReference,
                     creator: fixture.wallets.org.address,
-                    wormholeChainId: wormholeSource,
+                    wormholeChainId: bridged ? wormholeDest : wormholeSource,
                     beneficiary,
                     amount,
                     serviceFee,
@@ -178,7 +177,7 @@ describe("CrossChainEscrow", function () {
             platformSignature,
             escrowReference,
             fixture.wallets.org.address,
-            wormholeSource,
+            bridged ? wormholeDest : wormholeSource,
             beneficiary,
             amountsStruct,
             permit,
@@ -198,67 +197,12 @@ describe("CrossChainEscrow", function () {
         };
     }
 
-    async function deployFixtureWithBridgedEscrow() {
-        const fixture = await loadFixture(deployFixture);
+    async function setPredictableTimestamp() {
+        const now = BigInt(await time.latest());
+        const next = now + 1n;
+        await time.setNextBlockTimestamp(next);
 
-        const escrowReference = ethers.randomBytes(32);
-        const beneficiary = ethers.randomBytes(32);
-        const amount = ethers.parseUnits("100", 6);
-        const serviceFee = ethers.parseUnits("1", 6);
-        const nonce = 0;
-
-        const deadline = (await time.latest()) + 60 * 60;
-        const permit = await fixture.wallets.org.signTypedData(fixture.typeData.domain.usdc, fixture.typeData.permit, {
-            owner: fixture.wallets.org.address,
-            spender: fixture.sut.target,
-            value: amount + serviceFee,
-            nonce,
-            deadline,
-        });
-
-        const platformSignature = Signature.from(
-            await fixture.wallets.platform.signTypedData(
-                fixture.typeData.domain.crossChainEscrow,
-                fixture.typeData.create,
-                {
-                    escrowReference,
-                    creator: fixture.wallets.org.address,
-                    wormholeChainId: wormholeDest,
-                    beneficiary,
-                    amount,
-                    serviceFee,
-                    nonce,
-                }
-            )
-        );
-
-        const amountsStruct = {
-            escrow: amount,
-            serviceFee,
-        };
-
-        await fixture.sut.createEscrow(
-            platformSignature,
-            escrowReference,
-            fixture.wallets.org.address,
-            wormholeDest,
-            beneficiary,
-            amountsStruct,
-            permit,
-            deadline
-        );
-
-        return {
-            ...fixture,
-            escrow: {
-                escrowReference,
-                beneficiary,
-                amount,
-                serviceFee,
-                nonce,
-                deadline,
-            },
-        };
+        return next;
     }
 
     describe("Deployment", function () {
@@ -295,7 +239,7 @@ describe("CrossChainEscrow", function () {
         it("Should set the platform resolution timeout to 3 days", async function () {
             const { sut } = await loadFixture(deployFixture);
 
-            expect(await sut.platformResolutionTimeout()).to.be.equal(60 * 60 * 24 * 3);
+            expect(await sut.platformResolutionTimeout()).to.be.equal(threeDays);
         });
 
         it("Should set the owner", async function () {
@@ -365,14 +309,117 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("startDispute", function () {
-        it("Should revert if the ", async function () {
-            const { sut } = await loadFixture(deployFixtureWithDirectEscrow);
+        async function signStartDispute(fixture: Fixture, signer: HardhatEthersSigner, escrowId: BigNumberish) {
+            return Signature.from(
+                await signer.signTypedData(fixture.typeData.domain.crossChainEscrow, fixture.typeData.startDispute, {
+                    escrowId,
+                    nonce: await fixture.sut.nonces(fixture.wallets.owner.address),
+                })
+            );
+        }
 
-            expect(await sut.nextEscrowId()).to.be.equal(1);
+        it("Should revert if the escrow does not exist", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, wallets } = fixture;
+
+            const escrowId = 0;
+            const signature = await signStartDispute(fixture, wallets.platform, escrowId);
+
+            await expect(sut.startDispute(signature, escrowId)).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the signature is invalid", async function () {
+            const fixture = await addEscrow(await loadFixture(deployFixture), false);
+            const { sut, wallets } = fixture;
+
+            const escrowId = 0;
+            const signature = await signStartDispute(fixture, wallets.org, escrowId);
+
+            await expect(sut.startDispute(signature, escrowId)).to.be.revertedWithCustomError(
+                sut,
+                "UnauthorizedSender"
+            );
+        });
+
+        it("Should revert if the resolution process has already started", async function () {
+            const fixture = await addEscrow(await loadFixture(deployFixture), false);
+            const { sut, wallets } = fixture;
+
+            const escrowId = 0;
+
+            let signature = await signStartDispute(fixture, wallets.platform, escrowId);
+            await sut.startDispute(signature, escrowId);
+
+            signature = await signStartDispute(fixture, wallets.platform, escrowId);
+            await expect(sut.startDispute(signature, escrowId)).to.be.revertedWithCustomError(sut, "AlreadyStarted");
+        });
+
+        it("Should set the allowPlatformResolutionTimestamp value to a timestamp 3 days in the future", async function () {
+            const fixture = await addEscrow(await loadFixture(deployFixture), false);
+            const { sut, wallets } = fixture;
+
+            const nextTimestamp = await setPredictableTimestamp();
+
+            const escrowId = 0;
+            const signature = await signStartDispute(fixture, wallets.platform, escrowId);
+
+            await sut.startDispute(signature, escrowId);
+
+            const escrow = await sut.getEscrow(escrowId);
+            expect(escrow.allowPlatformResolutionTimestamp).to.be.equal(nextTimestamp + threeDays);
+        });
+
+        it("Should emit the DisputeStarted event", async function () {
+            const fixture = await addEscrow(await loadFixture(deployFixture), false);
+            const { sut, wallets } = fixture;
+
+            const nextTimestamp = await setPredictableTimestamp();
+
+            const escrowId = 0;
+            const signature = await signStartDispute(fixture, wallets.platform, escrowId);
+
+            await expect(sut.startDispute(signature, escrowId))
+                .to.emit(sut, "DisputeStarted")
+                .withArgs(escrowId, nextTimestamp + threeDays);
         });
     });
 
     describe("resolveDispute", function () {
+        async function startDispute(fixture: Fixture) {
+            const escrowId = 0;
+            const signature = Signature.from(
+                await fixture.wallets.platform.signTypedData(
+                    fixture.typeData.domain.crossChainEscrow,
+                    fixture.typeData.startDispute,
+                    {
+                        escrowId,
+                        nonce: await fixture.sut.nonces(fixture.wallets.owner.address),
+                    }
+                )
+            );
+
+            await fixture.sut.startDispute(signature, escrowId);
+
+            return fixture;
+        }
+
+        async function signResolveDispute(
+            fixture: Fixture,
+            signer: HardhatEthersSigner,
+            escrowId: BigNumberish,
+            creatorAmount: BigNumberish,
+            beneficiaryAmount: BigNumberish
+        ) {
+            return Signature.from(
+                await signer.signTypedData(fixture.typeData.domain.crossChainEscrow, fixture.typeData.resolveDispute, {
+                    escrowId,
+                    creatorAmount,
+                    beneficiaryAmount,
+                    nonce: await fixture.sut.nonces(fixture.wallets.owner.address),
+                })
+            );
+        }
+
         it("Should ", async function () {
             const { sut } = await loadFixture(deployFixture);
         });
