@@ -2,6 +2,10 @@
 pragma solidity ^0.8.20;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { IUSDC } from "./interfaces/IUSDC.sol";
 import { IWormholeRelayer } from "./interfaces/IWormholeRelayer.sol";
@@ -13,7 +17,7 @@ import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
  * @notice A cross chain escrow contract that allows for the creation of USDC escrows on one chain and the release on another chain.
  * Makes use of the wormhole protocol which in turn uses CCTP for cross chain communication.
  */
-contract CrossChainEscrow is Ownable {
+contract CrossChainEscrow is Ownable, EIP712, Nonces {
     error WormholeNotRegistered();
     error EscrowDoesNotExist();
     error UnauthorizedSender();
@@ -30,7 +34,7 @@ contract CrossChainEscrow is Ownable {
         bytes32 indexed escrow_reference,
         address indexed creator,
         uint16 wormhole_chain_id,
-        bytes32 benificiary,
+        bytes32 beneficiary,
         uint256 amount,
         uint256 serviceFee
     );
@@ -44,13 +48,14 @@ contract CrossChainEscrow is Ownable {
     event BridgeFeePaid(uint256 indexed escrow_id, uint256 amount);
 
     event DisputeStarted(uint256 indexed escrow_id, uint48 resolution_timestamp);
-    event DisputeResolved(uint256 indexed escrow_id, uint256 creatorAmount, uint256 benificiaryAmount);
+    event DisputeResolved(uint256 indexed escrow_id, uint256 creatorAmount, uint256 beneficiaryAmount);
 
     // #######################################################################################
 
-    /// @notice The typehash for the EIP712 domain struct.
-    bytes32 public constant DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    /// @notice The domain separator for the contract.
+    function DOMAIN_SEPARATOR() external view virtual returns (bytes32) {
+        return _domainSeparatorV4();
+    }
 
     /// @notice The typehash for the create escrow struct.
     bytes32 public constant CREATE_TYPEHASH =
@@ -78,10 +83,7 @@ contract CrossChainEscrow is Ownable {
 
     /// @notice The typehash for the resolve dispute struct.
     bytes32 public constant RESOLVE_DISPUTE_TYPEHASH =
-        keccak256("ResolveDispute(uint256 escrowId,uint256 creatorAmount,uint256 benificiaryAmount,uint256 nonce)");
-
-    /// @notice The domain separator for the contract.
-    bytes32 public immutable DOMAIN_SEPARATOR;
+        keccak256("ResolveDispute(uint256 escrowId,uint256 creatorAmount,uint256 beneficiaryAmount,uint256 nonce)");
 
     /// @notice The usdc address on this chain
     IUSDC public immutable USDC;
@@ -97,17 +99,14 @@ contract CrossChainEscrow is Ownable {
     /// @notice The next escrow id.
     uint256 public nextEscrowId;
 
-    /// @notice The platform owned signer address.
-    address public signer;
-
     /// @notice The platform owned treasury address.
     address public treasury;
 
+    /// @notice The platform owned signer address.
+    address public platformSigner;
+
     /// @notice The duration in seconds after which a dispute can be resolved by the platform.
     uint48 public platformResolutionTimeout;
-
-    /// @notice A mapping between the address and the signature nonce for the address. Used by the platform relayers.
-    mapping(address => uint256) private _nonces;
 
     /// @notice A mapping between the escrow id and escrow data.
     mapping(uint256 => Escrow) private _escrow;
@@ -117,14 +116,18 @@ contract CrossChainEscrow is Ownable {
 
     // #######################################################################################
 
-    constructor(IUSDC _usdc, address _signer, address _treasury) Ownable(msg.sender) {
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(DOMAIN_TYPEHASH, keccak256("Escrow"), keccak256("1"), block.chainid, address(this))
-        );
-
+    constructor(
+        IUSDC _usdc,
+        IWormholeRelayer _wormholeRelayer,
+        uint16 _wormholeChaidId,
+        address _signer,
+        address _treasury
+    ) Ownable(msg.sender) EIP712("CrossChainEscrow", "1") {
         USDC = _usdc;
+        WORMHOLE = _wormholeRelayer;
+        WORMHOLE_CHAIN_ID = _wormholeChaidId;
 
-        signer = _signer;
+        platformSigner = _signer;
         treasury = _treasury;
         platformResolutionTimeout = 3 days;
     }
@@ -132,7 +135,7 @@ contract CrossChainEscrow is Ownable {
     // #######################################################################################
 
     modifier onlySigner(address _sender) {
-        if (signer != _sender) revert UnauthorizedSender();
+        if (platformSigner != _sender) revert UnauthorizedSender();
         _;
     }
 
@@ -164,12 +167,12 @@ contract CrossChainEscrow is Ownable {
         uint16 _wormholeChainId,
         bytes32 _beneficiary,
         Amounts calldata _amounts,
-        bytes memory _signature,
+        bytes calldata _signature,
         uint256 _deadline
     )
         external
         onlySigner(
-            _noncedRecoverSigner(
+            _recoverSigner(
                 _platformSignature,
                 keccak256(
                     abi.encode(
@@ -180,7 +183,7 @@ contract CrossChainEscrow is Ownable {
                         _beneficiary,
                         _amounts.escrow,
                         _amounts.serviceFee,
-                        _nonces[msg.sender]
+                        _useNonce(msg.sender)
                     )
                 )
             )
@@ -194,7 +197,7 @@ contract CrossChainEscrow is Ownable {
             creator: _creator,
             allowPlatformResolutionTimestamp: 0,
             wormholeChainId: _wormholeChainId,
-            benificiary: _beneficiary
+            beneficiary: _beneficiary
         });
 
         _custodyUSDC(_amounts, _signature, _creator, _deadline);
@@ -224,16 +227,22 @@ contract CrossChainEscrow is Ownable {
         Signature calldata _platformSignature,
         uint256 _escrowId,
         Amounts calldata _amounts,
-        bytes memory _signature,
+        bytes calldata _signature,
         uint256 _deadline
     )
         external
         onlyExists(_escrowId)
         onlySigner(
-            _noncedRecoverSigner(
+            _recoverSigner(
                 _platformSignature,
                 keccak256(
-                    abi.encode(INCREASE_TYPEHASH, _escrowId, _amounts.escrow, _amounts.serviceFee, _nonces[msg.sender])
+                    abi.encode(
+                        INCREASE_TYPEHASH,
+                        _escrowId,
+                        _amounts.escrow,
+                        _amounts.serviceFee,
+                        _useNonce(msg.sender)
+                    )
                 )
             )
         )
@@ -267,9 +276,9 @@ contract CrossChainEscrow is Ownable {
         onlyExists(_escrowId)
         onlyCreator(
             _escrowId,
-            _noncedRecoverSigner(
+            _recoverSigner(
                 _creatorSignature,
-                keccak256(abi.encode(RELEASE_TYPEHASH, _escrowId, _amount, _nonces[msg.sender]))
+                keccak256(abi.encode(RELEASE_TYPEHASH, _escrowId, _amount, _useNonce(msg.sender)))
             )
         )
     {
@@ -287,9 +296,9 @@ contract CrossChainEscrow is Ownable {
     )
         external
         onlySigner(
-            _noncedRecoverSigner(
+            _recoverSigner(
                 _platformSignature,
-                keccak256(abi.encode(ELECTED_SIGNER_TYPEHASH, _nonEvmSigner, _electedSigner, _nonces[msg.sender]))
+                keccak256(abi.encode(ELECTED_SIGNER_TYPEHASH, _nonEvmSigner, _electedSigner, _useNonce(msg.sender)))
             )
         )
     {
@@ -297,31 +306,37 @@ contract CrossChainEscrow is Ownable {
         emit SignerElected(_nonEvmSigner, _electedSigner);
     }
 
-    /// @notice Resolves a dispute amicably. Can be called by anyone but must satisfy two conditions. 1) Both the creator and benificiary must sign the resolution. 2) The amounts must add up to the escrow amount.
+    /// @notice Resolves a dispute amicably. Can be called by anyone but must satisfy two conditions. 1) Both the creator and beneficiary must sign the resolution. 2) The amounts must add up to the escrow amount.
     /// @param _creatorSignature The creator signature.
-    /// @param _benificiarySignature The benificiary signature.
+    /// @param _beneficiarySignature The beneficiary signature.
     /// @param _escrowId The escrow id.
     /// @param _creatorAmount The creator amount.
-    /// @param _benificiaryAmount The benificiary amount.
+    /// @param _beneficiaryAmount The beneficiary amount.
     function amicableResolution(
         Signature calldata _creatorSignature,
-        Signature calldata _benificiarySignature,
+        Signature calldata _beneficiarySignature,
         uint256 _escrowId,
         uint256 _creatorAmount,
-        uint256 _benificiaryAmount
+        uint256 _beneficiaryAmount
     ) external onlyExists(_escrowId) {
         if (
             _escrow[_escrowId].creator !=
-            _recoverSigner(_creatorSignature, _getResolveAmicablyDigest(_escrowId, _creatorAmount))
+            _recoverSigner(
+                _creatorSignature,
+                keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _creatorAmount))
+            )
         ) revert InvalidSignature();
 
-        address _benificiary = _getBenificiaryAddress(_escrow[_escrowId].benificiary);
+        address _beneficiary = _getbeneficiaryAddress(_escrow[_escrowId].beneficiary);
         if (
-            _benificiary !=
-            _recoverSigner(_benificiarySignature, _getResolveAmicablyDigest(_escrowId, _benificiaryAmount))
+            _beneficiary !=
+            _recoverSigner(
+                _beneficiarySignature,
+                keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _beneficiaryAmount))
+            )
         ) revert InvalidSignature();
 
-        _resolveDispute(_escrowId, _creatorAmount, _benificiaryAmount);
+        _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
     }
 
     /// @notice Starts a dispute. Can only be called by the platform.
@@ -334,9 +349,9 @@ contract CrossChainEscrow is Ownable {
         external
         onlyExists(_escrowId)
         onlySigner(
-            _noncedRecoverSigner(
+            _recoverSigner(
                 _platformSignature,
-                keccak256(abi.encode(START_DISPUTE_TYPEHASH, _escrowId, _nonces[msg.sender]))
+                keccak256(abi.encode(START_DISPUTE_TYPEHASH, _escrowId, _useNonce(msg.sender)))
             )
         )
     {
@@ -351,25 +366,25 @@ contract CrossChainEscrow is Ownable {
     /// @param _platformSignature The platform signature.
     /// @param _escrowId The escrow id.
     /// @param _creatorAmount The creator amount.
-    /// @param _benificiaryAmount The benificiary amount.
+    /// @param _beneficiaryAmount The beneficiary amount.
     function resolveDispute(
         Signature calldata _platformSignature,
         uint256 _escrowId,
         uint256 _creatorAmount,
-        uint256 _benificiaryAmount
+        uint256 _beneficiaryAmount
     )
         external
         onlyExists(_escrowId)
         onlySigner(
-            _noncedRecoverSigner(
+            _recoverSigner(
                 _platformSignature,
                 keccak256(
                     abi.encode(
                         RESOLVE_DISPUTE_TYPEHASH,
                         _escrowId,
                         _creatorAmount,
-                        _benificiaryAmount,
-                        _nonces[msg.sender]
+                        _beneficiaryAmount,
+                        _useNonce(msg.sender)
                     )
                 )
             )
@@ -380,37 +395,35 @@ contract CrossChainEscrow is Ownable {
             _escrow[_escrowId].allowPlatformResolutionTimestamp > block.timestamp
         ) revert CannotResolveYet();
 
-        _resolveDispute(_escrowId, _creatorAmount, _benificiaryAmount);
+        _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
     }
 
     // #######################################################################################
-
-    /// @notice Gets the nonce for a given address.
-    /// @param _for The address to get the nonce for.
-    function getNonce(address _for) external view returns (uint256) {
-        return _nonces[_for];
-    }
 
     /// @notice Gets the elected signer for a non evm supported chain address.
     function getElectedSigner(bytes32 _nonEvmSigner) external view returns (address) {
         return _electedSigners[_nonEvmSigner];
     }
 
+    /// @notice Gets the escrow data for a given escrow id.
     function getEscrow(uint256 _escrowId) external view returns (Escrow memory) {
         return _escrow[_escrowId];
     }
 
     // #######################################################################################
 
-    function setSigner(address _signer) external onlyOwner {
-        signer = _signer;
-    }
-
+    /// @notice Sets the treasury. Note, this can only be called by the owner.
     function setTreasury(address _treasury) external onlyOwner {
         treasury = _treasury;
     }
 
-    function setResolutionTimeoutDuration(uint48 _duration) external onlyOwner {
+    /// @notice Sets the signer. Note, this can only be called by the owner.
+    function setPlatformSigner(address _signer) external onlyOwner {
+        platformSigner = _signer;
+    }
+
+    /// @notice Sets the platform resolution timeout. Note, this can only be called by the owner.
+    function setPlatformResolutionTimeout(uint48 _duration) external onlyOwner {
         platformResolutionTimeout = _duration;
     }
 
@@ -418,87 +431,75 @@ contract CrossChainEscrow is Ownable {
 
     function _custodyUSDC(
         Amounts calldata _amounts,
-        bytes memory _signature,
+        bytes calldata _signature,
         address _from,
         uint256 _deadline
     ) private {
         uint256 _amount = _amounts.escrow + _amounts.serviceFee;
 
         USDC.permit(_from, address(this), _amount, _deadline, _signature);
-        USDC.transferFrom(_from, address(this), _amounts.escrow);
-        USDC.transferFrom(_from, treasury, _amounts.serviceFee);
+        SafeERC20.safeTransferFrom(USDC, _from, address(this), _amounts.escrow);
+        SafeERC20.safeTransferFrom(USDC, _from, treasury, _amounts.serviceFee);
     }
 
-    function _resolveDispute(uint256 _escrowId, uint256 _creatorAmount, uint256 _benificiaryAmount) private {
-        if (_creatorAmount + _benificiaryAmount != _escrow[_escrowId].amount) revert InvalidResolution();
+    function _resolveDispute(uint256 _escrowId, uint256 _creatorAmount, uint256 _beneficiaryAmount) private {
+        if (_creatorAmount + _beneficiaryAmount != _escrow[_escrowId].amount) revert InvalidResolution();
 
         _escrow[_escrowId].amount = 0;
 
         if (_creatorAmount > 0) _transferToCreator(_escrowId, _creatorAmount);
-        if (_benificiaryAmount > 0) _transferToBenificiary(_escrowId, _benificiaryAmount);
+        if (_beneficiaryAmount > 0) _transferTobeneficiary(_escrowId, _beneficiaryAmount);
 
-        emit DisputeResolved(_escrowId, _creatorAmount, _benificiaryAmount);
+        emit DisputeResolved(_escrowId, _creatorAmount, _beneficiaryAmount);
     }
 
     function _releaseEscrow(uint256 _escrowId, uint256 _amount) private {
         _escrow[_escrowId].amount -= _amount;
-        _transferToBenificiary(_escrowId, _amount);
+        _transferTobeneficiary(_escrowId, _amount);
     }
 
     function _transferToCreator(uint256 _escrowId, uint256 _amount) private {
-        USDC.transfer(_escrow[_escrowId].creator, _amount);
+        SafeERC20.safeTransfer(USDC, _escrow[_escrowId].creator, _amount);
 
         emit EscrowRefunded(_escrowId, _amount);
     }
 
-    function _transferToBenificiary(uint256 _escrowId, uint256 _amount) private {
+    function _transferTobeneficiary(uint256 _escrowId, uint256 _amount) private {
         uint64 messageSequence = 0;
 
         if (_escrow[_escrowId].wormholeChainId == WORMHOLE_CHAIN_ID) {
-            USDC.transfer(_bytes32ToAddress(_escrow[_escrowId].benificiary), _amount);
+            SafeERC20.safeTransfer(USDC, _bytes32ToAddress(_escrow[_escrowId].beneficiary), _amount);
         } else {
             uint256 fee = WORMHOLE.relayerFee(_escrow[_escrowId].wormholeChainId, address(USDC));
 
             if (fee > 0) {
-                USDC.transferFrom(treasury, address(this), fee);
+                SafeERC20.safeTransferFrom(USDC, treasury, address(this), fee);
                 USDC.approve(address(WORMHOLE), _amount + fee);
 
                 emit BridgeFeePaid(_escrowId, fee);
             }
 
             messageSequence = WORMHOLE.transferTokensWithRelay(
-                address(USDC),
+                USDC,
                 _amount + fee,
                 _amount,
                 _escrow[_escrowId].wormholeChainId,
-                _escrow[_escrowId].benificiary
+                _escrow[_escrowId].beneficiary
             );
         }
 
         emit EscrowReleased(_escrowId, _amount, messageSequence);
     }
 
-    function _getBenificiaryAddress(bytes32 _benificiary) private view returns (address) {
+    function _getbeneficiaryAddress(bytes32 _beneficiary) private view returns (address) {
         return
-            _electedSigners[_benificiary] == address(0)
-                ? _bytes32ToAddress(_benificiary)
-                : _electedSigners[_benificiary];
+            _electedSigners[_beneficiary] == address(0)
+                ? _bytes32ToAddress(_beneficiary)
+                : _electedSigners[_beneficiary];
     }
 
-    function _noncedRecoverSigner(Signature calldata _signature, bytes32 _digest) private returns (address) {
-        unchecked {
-            _nonces[msg.sender]++;
-        }
-
-        return ecrecover(_digest, _signature.v, _signature.r, _signature.s);
-    }
-
-    function _recoverSigner(Signature calldata _signature, bytes32 _digest) private pure returns (address) {
-        return ecrecover(_digest, _signature.v, _signature.r, _signature.s);
-    }
-
-    function _getResolveAmicablyDigest(uint256 _escrowId, uint256 _amount) private pure returns (bytes32) {
-        return keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _amount));
+    function _recoverSigner(Signature calldata _signature, bytes32 _digest) private view returns (address) {
+        return ECDSA.recover(_hashTypedDataV4(_digest), _signature.v, _signature.r, _signature.s);
     }
 
     function _bytes32ToAddress(bytes32 _input) private pure returns (address) {

@@ -6,7 +6,7 @@ struct Escrow {
     address creator;
     uint48 allowPlatformResolutionTimestamp;
     uint16 wormholeChainId;
-    bytes32 benificiary;
+    bytes32 beneficiary;
 }
 
 struct Amounts {
