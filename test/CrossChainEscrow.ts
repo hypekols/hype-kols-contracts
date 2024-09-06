@@ -350,6 +350,16 @@ describe("CrossChainEscrow", function () {
         };
     }
 
+    async function startDispute(fixture: Fixture, escrowId: bigint) {
+        const { sut, signTypeData, wallets, nonces } = fixture;
+
+        const platformSignature = await signTypeData.startDispute(wallets.platform, escrowId, await nonces.owner());
+
+        await sut.startDispute(platformSignature, escrowId);
+
+        return fixture;
+    }
+
     async function getPermit(fixture: Fixture, amount: bigint) {
         const { sut, wallets, signTypeData, nonces } = fixture;
 
@@ -1413,8 +1423,476 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("amicableResolution", function () {
-        it("Should ", async function () {
-            const { sut } = await loadFixture(deployFixture);
+        it("Should revert if the escrow does not exist", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const missingId = escrow.id + 1n;
+
+            const half = escrow.amount / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, missingId, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, missingId, half);
+
+            await expect(
+                sut.amicableResolution(creatorSignature, beneficiarySignature, missingId, half, half)
+            ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the creator signature is wrong", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const half = escrow.amount / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.kol, escrow.id, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, half);
+
+            await expect(
+                sut.amicableResolution(creatorSignature, beneficiarySignature, escrow.id, half, half)
+            ).to.be.revertedWithCustomError(sut, "InvalidSignature");
+        });
+
+        it("Should revert if the beneficiary signature is wrong", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const half = escrow.amount / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.org, escrow.id, half);
+
+            await expect(
+                sut.amicableResolution(creatorSignature, beneficiarySignature, escrow.id, half, half)
+            ).to.be.revertedWithCustomError(sut, "InvalidSignature");
+        });
+
+        it("Should revert if the beneficiary address is not evm", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployBridgedEscrowFixture);
+
+            const half = escrow.amount / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, half);
+
+            await expect(
+                sut.amicableResolution(creatorSignature, beneficiarySignature, escrow.id, half, half)
+            ).to.be.revertedWithCustomError(sut, "InvalidAddress");
+        });
+
+        it("Should use the elected signer", async function () {
+            const { sut, wallets, signTypeData, escrow, nonces } = await loadFixture(deployBridgedEscrowFixture);
+
+            await sut.setElectedSigner(
+                await signTypeData.electedSigner(
+                    wallets.platform,
+                    escrow.beneficiary,
+                    wallets.kol.address,
+                    await nonces.owner()
+                ),
+                escrow.beneficiary,
+                wallets.kol.address
+            );
+
+            const half = escrow.amount / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, half);
+
+            await expect(sut.amicableResolution(creatorSignature, beneficiarySignature, escrow.id, half, half))
+                .to.emit(sut, "DisputeResolved")
+                .withArgs(escrow.id, half, half);
+        });
+
+        it("Should revert if the full amount is not accounted for", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const half = escrow.amount / 2n;
+            const quarter = half / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, quarter);
+
+            await expect(
+                sut.amicableResolution(creatorSignature, beneficiarySignature, escrow.id, half, quarter)
+            ).to.be.revertedWithCustomError(sut, "InvalidResolution");
+        });
+
+        it("Should revert if the combined amount is too much", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const half = escrow.amount / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, escrow.amount);
+
+            await expect(
+                sut.amicableResolution(creatorSignature, beneficiarySignature, escrow.id, half, escrow.amount)
+            ).to.be.revertedWithCustomError(sut, "InvalidResolution");
+        });
+
+        it("Should set the amount to 0", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const half = escrow.amount / 2n;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, half);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, half);
+
+            await sut.amicableResolution(creatorSignature, beneficiarySignature, escrow.id, half, half);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+            expect(escrowData.amount).to.be.equal(0);
+        });
+
+        it("Should emit the DisputeResolved event", async function () {
+            const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const creatorAmount = escrow.amount / 4n;
+            const beneficiaryAmount = escrow.amount - creatorAmount;
+
+            const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+            const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+            await expect(
+                sut.amicableResolution(
+                    creatorSignature,
+                    beneficiarySignature,
+                    escrow.id,
+                    creatorAmount,
+                    beneficiaryAmount
+                )
+            )
+                .to.emit(sut, "DisputeResolved")
+                .withArgs(escrow.id, creatorAmount, beneficiaryAmount);
+        });
+
+        describe("creator", function () {
+            it("Should transfer the amount to the creator", async function () {
+                const { sut, usdc, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+                const creatorAmount = escrow.amount;
+                const beneficiaryAmount = 0n;
+
+                const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+                const creatorBalanceBefore = await usdc.balanceOf(escrow.creator);
+
+                await sut.amicableResolution(
+                    creatorSignature,
+                    beneficiarySignature,
+                    escrow.id,
+                    creatorAmount,
+                    beneficiaryAmount
+                );
+
+                const creatorBalanceAfter = await usdc.balanceOf(escrow.creator);
+
+                expect(creatorBalanceAfter).to.be.equal(creatorBalanceBefore + creatorAmount);
+            });
+
+            it("Should emit EscrowRefunded", async function () {
+                const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+                const creatorAmount = escrow.amount;
+                const beneficiaryAmount = 0n;
+
+                const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+                await expect(
+                    sut.amicableResolution(
+                        creatorSignature,
+                        beneficiarySignature,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount
+                    )
+                )
+                    .to.emit(sut, "EscrowRefunded")
+                    .withArgs(escrow.id, creatorAmount);
+            });
+        });
+
+        describe("beneficiary", function () {
+            describe("direct", function () {
+                it("Should transfer the amount to the beneficiary", async function () {
+                    const { sut, usdc, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                    const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+                    const beneficiaryBalanceBefore = await usdc.balanceOf(wallets.kol.address);
+
+                    await sut.amicableResolution(
+                        creatorSignature,
+                        beneficiarySignature,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount
+                    );
+
+                    const beneficiaryBalanceAfter = await usdc.balanceOf(wallets.kol.address);
+
+                    expect(beneficiaryBalanceAfter).to.be.equal(beneficiaryBalanceBefore + beneficiaryAmount);
+                });
+
+                it("Should emit EscrowReleased", async function () {
+                    const { sut, wallets, signTypeData, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+                    const messageSequence = 0n;
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                    const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+                    await expect(
+                        sut.amicableResolution(
+                            creatorSignature,
+                            beneficiarySignature,
+                            escrow.id,
+                            creatorAmount,
+                            beneficiaryAmount
+                        )
+                    )
+                        .to.emit(sut, "EscrowReleased")
+                        .withArgs(escrow.id, beneficiaryAmount, messageSequence);
+                });
+            });
+
+            describe("bridged", function () {
+                describe("has fee", function () {
+                    let fixture: Awaited<ReturnType<typeof deployBridgedEscrowFixture>>;
+
+                    this.beforeEach(async function () {
+                        fixture = await loadFixture(deployBridgedEscrowFixture);
+
+                        await fixture.sut.setElectedSigner(
+                            await fixture.signTypeData.electedSigner(
+                                fixture.wallets.platform,
+                                fixture.escrow.beneficiary,
+                                fixture.wallets.kol.address,
+                                await fixture.nonces.owner()
+                            ),
+                            fixture.escrow.beneficiary,
+                            fixture.wallets.kol.address
+                        );
+
+                        await fixture.wormholeRelayer.mockRelayerFee(
+                            wormholeDest,
+                            fixture.usdc.target,
+                            wormholeDestFee
+                        );
+                    });
+
+                    it("Should forward the call to wormhole including the fee", async function () {
+                        const { sut, wormholeRelayer, usdc, wallets, signTypeData, escrow } = fixture;
+
+                        const creatorAmount = 0n;
+                        const beneficiaryAmount = escrow.amount;
+
+                        const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                        const beneficiarySignature = await signTypeData.amicable(
+                            wallets.kol,
+                            escrow.id,
+                            beneficiaryAmount
+                        );
+
+                        await expect(
+                            sut.amicableResolution(
+                                creatorSignature,
+                                beneficiarySignature,
+                                escrow.id,
+                                creatorAmount,
+                                beneficiaryAmount
+                            )
+                        )
+                            .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                            .withArgs(
+                                usdc.target,
+                                escrow.amount + wormholeDestFee,
+                                nativeDrop,
+                                wormholeDest,
+                                escrow.beneficiary
+                            );
+                    });
+
+                    it("Should transfer the fee from the treasury", async function () {
+                        const { sut, wormholeRelayer, usdc, wallets, signTypeData, escrow } = fixture;
+
+                        const creatorAmount = 0n;
+                        const beneficiaryAmount = escrow.amount;
+
+                        const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                        const beneficiarySignature = await signTypeData.amicable(
+                            wallets.kol,
+                            escrow.id,
+                            beneficiaryAmount
+                        );
+
+                        const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                        const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+                        const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
+
+                        await sut.amicableResolution(
+                            creatorSignature,
+                            beneficiarySignature,
+                            escrow.id,
+                            creatorAmount,
+                            beneficiaryAmount
+                        );
+
+                        const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                        const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+                        const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
+
+                        expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                        expect(wormholeBalanceAfter).to.be.equal(
+                            wormholeBalanceBefore + wormholeDestFee + escrow.amount
+                        );
+                        expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore - wormholeDestFee);
+                    });
+
+                    it("Should emit the BridgeFeePaid event", async function () {
+                        const { sut, wallets, signTypeData, escrow } = fixture;
+
+                        const creatorAmount = 0n;
+                        const beneficiaryAmount = escrow.amount;
+
+                        const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                        const beneficiarySignature = await signTypeData.amicable(
+                            wallets.kol,
+                            escrow.id,
+                            beneficiaryAmount
+                        );
+
+                        await expect(
+                            sut.amicableResolution(
+                                creatorSignature,
+                                beneficiarySignature,
+                                escrow.id,
+                                creatorAmount,
+                                beneficiaryAmount
+                            )
+                        )
+                            .to.emit(sut, "BridgeFeePaid")
+                            .withArgs(escrow.id, wormholeDestFee);
+                    });
+                });
+
+                it("Should transfer the amount to wormhole", async function () {
+                    const fixture = await loadFixture(deployBridgedEscrowFixture);
+                    const { sut, wormholeRelayer, usdc, signTypeData, wallets, escrow, nonces } = fixture;
+
+                    await sut.setElectedSigner(
+                        await signTypeData.electedSigner(
+                            wallets.platform,
+                            escrow.beneficiary,
+                            wallets.kol.address,
+                            await nonces.owner()
+                        ),
+                        escrow.beneficiary,
+                        wallets.kol.address
+                    );
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                    const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+                    const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+
+                    await sut.amicableResolution(
+                        creatorSignature,
+                        beneficiarySignature,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount
+                    );
+
+                    const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+
+                    expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                    expect(wormholeBalanceAfter).to.be.equal(wormholeBalanceBefore + escrow.amount);
+                });
+
+                it("Should forward the call to wormhole", async function () {
+                    const fixture = await loadFixture(deployBridgedEscrowFixture);
+                    const { sut, wormholeRelayer, usdc, signTypeData, wallets, escrow, nonces } = fixture;
+
+                    await sut.setElectedSigner(
+                        await signTypeData.electedSigner(
+                            wallets.platform,
+                            escrow.beneficiary,
+                            wallets.kol.address,
+                            await nonces.owner()
+                        ),
+                        escrow.beneficiary,
+                        wallets.kol.address
+                    );
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                    const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+                    await expect(
+                        sut.amicableResolution(
+                            creatorSignature,
+                            beneficiarySignature,
+                            escrow.id,
+                            creatorAmount,
+                            beneficiaryAmount
+                        )
+                    )
+                        .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                        .withArgs(usdc.target, escrow.amount, nativeDrop, wormholeDest, escrow.beneficiary);
+                });
+
+                it("Should emit the EscrowReleased event", async function () {
+                    const fixture = await loadFixture(deployBridgedEscrowFixture);
+                    const { sut, wormholeRelayer, signTypeData, wallets, escrow, nonces } = fixture;
+
+                    await sut.setElectedSigner(
+                        await signTypeData.electedSigner(
+                            wallets.platform,
+                            escrow.beneficiary,
+                            wallets.kol.address,
+                            await nonces.owner()
+                        ),
+                        escrow.beneficiary,
+                        wallets.kol.address
+                    );
+
+                    const messageSequence = 15;
+                    await wormholeRelayer.mockMessageSequence(messageSequence);
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const creatorSignature = await signTypeData.amicable(wallets.org, escrow.id, creatorAmount);
+                    const beneficiarySignature = await signTypeData.amicable(wallets.kol, escrow.id, beneficiaryAmount);
+
+                    await expect(
+                        sut.amicableResolution(
+                            creatorSignature,
+                            beneficiarySignature,
+                            escrow.id,
+                            creatorAmount,
+                            beneficiaryAmount
+                        )
+                    )
+                        .to.emit(sut, "EscrowReleased")
+                        .withArgs(escrow.id, escrow.amount, messageSequence);
+                });
+            });
         });
     });
 
@@ -1478,8 +1956,544 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("resolveDispute", function () {
-        it("Should ", async function () {
-            const { sut } = await loadFixture(deployFixture);
+        it("Should revert if the escrow does not exist", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+            const half = escrow.amount / 2n;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.platform,
+                escrow.id + 1n,
+                half,
+                half,
+                await nonces.owner()
+            );
+
+            const data = await sut.getEscrow(escrow.id);
+            await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+            await expect(
+                sut.resolveDispute(platformSignature, escrow.id + 1n, half, half)
+            ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the signature is invalid", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+            const half = escrow.amount / 2n;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.org, // invalid signer
+                escrow.id,
+                half,
+                half,
+                await nonces.owner()
+            );
+
+            const data = await sut.getEscrow(escrow.id);
+            await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+            await expect(sut.resolveDispute(platformSignature, escrow.id, half, half)).to.be.revertedWithCustomError(
+                sut,
+                "UnauthorizedSender"
+            );
+        });
+
+        it("Should revert if the dispute has not been started", async function () {
+            const { sut, wallets, signTypeData, nonces, escrow } = await loadFixture(deployDirectEscrowFixture);
+            const half = escrow.amount / 2n;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.platform,
+                escrow.id,
+                half,
+                half,
+                await nonces.owner()
+            );
+
+            await expect(sut.resolveDispute(platformSignature, escrow.id, half, half)).to.be.revertedWithCustomError(
+                sut,
+                "CannotResolveYet"
+            );
+        });
+
+        it("Should revert if the dispute is in timeout", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+            const half = escrow.amount / 2n;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.platform,
+                escrow.id,
+                half,
+                half,
+                await nonces.owner()
+            );
+
+            const data = await sut.getEscrow(escrow.id);
+            await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp - 1n);
+
+            await expect(sut.resolveDispute(platformSignature, escrow.id, half, half)).to.be.revertedWithCustomError(
+                sut,
+                "CannotResolveYet"
+            );
+        });
+
+        it("Should revert if the full amount is not accounted for", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+            const half = escrow.amount / 2n;
+            const quarter = half / 2n;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.platform,
+                escrow.id,
+                half,
+                quarter,
+                await nonces.owner()
+            );
+
+            const data = await sut.getEscrow(escrow.id);
+            await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+            await expect(sut.resolveDispute(platformSignature, escrow.id, half, quarter)).to.be.revertedWithCustomError(
+                sut,
+                "InvalidResolution"
+            );
+        });
+
+        it("Should revert if the combined amount is too much", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+            const half = escrow.amount / 2n;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.platform,
+                escrow.id,
+                half,
+                escrow.amount,
+                await nonces.owner()
+            );
+
+            const data = await sut.getEscrow(escrow.id);
+            await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+            await expect(
+                sut.resolveDispute(platformSignature, escrow.id, half, escrow.amount)
+            ).to.be.revertedWithCustomError(sut, "InvalidResolution");
+        });
+
+        it("Should set the amount to 0", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+            const half = escrow.amount / 2n;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.platform,
+                escrow.id,
+                half,
+                half,
+                await nonces.owner()
+            );
+
+            const data = await sut.getEscrow(escrow.id);
+            await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+            await sut.resolveDispute(platformSignature, escrow.id, half, half);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+            expect(escrowData.amount).to.be.equal(0);
+        });
+
+        it("Should emit the DisputeResolved event", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+            const creatorAmount = escrow.amount / 4n;
+            const beneficiaryAmount = escrow.amount - creatorAmount;
+
+            const platformSignature = await signTypeData.resolveDispute(
+                wallets.platform,
+                escrow.id,
+                creatorAmount,
+                beneficiaryAmount,
+                await nonces.owner()
+            );
+
+            const data = await sut.getEscrow(escrow.id);
+            await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+            await expect(sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount))
+                .to.emit(sut, "DisputeResolved")
+                .withArgs(escrow.id, creatorAmount, beneficiaryAmount);
+        });
+
+        describe("creator", function () {
+            it("Should transfer the amount to the creator", async function () {
+                const fixture = await loadFixture(deployDirectEscrowFixture);
+                const { escrow } = fixture;
+                const { sut, usdc, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+                const creatorAmount = escrow.amount;
+                const beneficiaryAmount = 0n;
+
+                const platformSignature = await signTypeData.resolveDispute(
+                    wallets.platform,
+                    escrow.id,
+                    creatorAmount,
+                    beneficiaryAmount,
+                    await nonces.owner()
+                );
+
+                const data = await sut.getEscrow(escrow.id);
+                await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                const creatorBalanceBefore = await usdc.balanceOf(escrow.creator);
+
+                await sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount);
+
+                const creatorBalanceAfter = await usdc.balanceOf(escrow.creator);
+
+                expect(creatorBalanceAfter).to.be.equal(creatorBalanceBefore + creatorAmount);
+            });
+
+            it("Should emit EscrowRefunded", async function () {
+                const fixture = await loadFixture(deployDirectEscrowFixture);
+                const { escrow } = fixture;
+                const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+                const creatorAmount = escrow.amount;
+                const beneficiaryAmount = 0n;
+
+                const platformSignature = await signTypeData.resolveDispute(
+                    wallets.platform,
+                    escrow.id,
+                    creatorAmount,
+                    beneficiaryAmount,
+                    await nonces.owner()
+                );
+
+                const data = await sut.getEscrow(escrow.id);
+                await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                await expect(sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount))
+                    .to.emit(sut, "EscrowRefunded")
+                    .withArgs(escrow.id, creatorAmount);
+            });
+        });
+
+        describe("beneficiary", function () {
+            describe("direct", function () {
+                it("Should transfer the amount to the beneficiary", async function () {
+                    const fixture = await loadFixture(deployDirectEscrowFixture);
+                    const { escrow } = fixture;
+                    const { sut, usdc, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const platformSignature = await signTypeData.resolveDispute(
+                        wallets.platform,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount,
+                        await nonces.owner()
+                    );
+
+                    const data = await sut.getEscrow(escrow.id);
+                    await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                    const beneficiaryBalanceBefore = await usdc.balanceOf(wallets.kol.address);
+
+                    await sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount);
+
+                    const beneficiaryBalanceAfter = await usdc.balanceOf(wallets.kol.address);
+
+                    expect(beneficiaryBalanceAfter).to.be.equal(beneficiaryBalanceBefore + beneficiaryAmount);
+                });
+
+                it("Should emit EscrowReleased", async function () {
+                    const fixture = await loadFixture(deployDirectEscrowFixture);
+                    const { escrow } = fixture;
+                    const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+                    const messageSequence = 0n;
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const platformSignature = await signTypeData.resolveDispute(
+                        wallets.platform,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount,
+                        await nonces.owner()
+                    );
+
+                    const data = await sut.getEscrow(escrow.id);
+                    await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                    await expect(sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount))
+                        .to.emit(sut, "EscrowReleased")
+                        .withArgs(escrow.id, beneficiaryAmount, messageSequence);
+                });
+            });
+
+            describe("bridged", function () {
+                describe("has fee", function () {
+                    let fixture: Awaited<ReturnType<typeof deployBridgedEscrowFixture>>;
+
+                    this.beforeEach(async function () {
+                        fixture = await loadFixture(deployBridgedEscrowFixture);
+
+                        await fixture.sut.setElectedSigner(
+                            await fixture.signTypeData.electedSigner(
+                                fixture.wallets.platform,
+                                fixture.escrow.beneficiary,
+                                fixture.wallets.kol.address,
+                                await fixture.nonces.owner()
+                            ),
+                            fixture.escrow.beneficiary,
+                            fixture.wallets.kol.address
+                        );
+
+                        await fixture.wormholeRelayer.mockRelayerFee(
+                            wormholeDest,
+                            fixture.usdc.target,
+                            wormholeDestFee
+                        );
+                    });
+
+                    it("Should forward the call to wormhole including the fee", async function () {
+                        const { escrow } = fixture;
+                        const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
+                            fixture,
+                            escrow.id
+                        );
+
+                        const creatorAmount = 0n;
+                        const beneficiaryAmount = escrow.amount;
+
+                        const platformSignature = await signTypeData.resolveDispute(
+                            wallets.platform,
+                            escrow.id,
+                            creatorAmount,
+                            beneficiaryAmount,
+                            await nonces.owner()
+                        );
+
+                        const data = await sut.getEscrow(escrow.id);
+                        await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                        await expect(sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount))
+                            .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                            .withArgs(
+                                usdc.target,
+                                escrow.amount + wormholeDestFee,
+                                nativeDrop,
+                                wormholeDest,
+                                escrow.beneficiary
+                            );
+                    });
+
+                    it("Should transfer the fee from the treasury", async function () {
+                        const { escrow } = fixture;
+                        const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
+                            fixture,
+                            escrow.id
+                        );
+
+                        const creatorAmount = 0n;
+                        const beneficiaryAmount = escrow.amount;
+
+                        const platformSignature = await signTypeData.resolveDispute(
+                            wallets.platform,
+                            escrow.id,
+                            creatorAmount,
+                            beneficiaryAmount,
+                            await nonces.owner()
+                        );
+
+                        const data = await sut.getEscrow(escrow.id);
+                        await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                        const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                        const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+                        const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
+
+                        await sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount);
+
+                        const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                        const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+                        const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
+
+                        expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                        expect(wormholeBalanceAfter).to.be.equal(
+                            wormholeBalanceBefore + wormholeDestFee + escrow.amount
+                        );
+                        expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore - wormholeDestFee);
+                    });
+
+                    it("Should emit the BridgeFeePaid event", async function () {
+                        const { escrow } = fixture;
+                        const { sut, wallets, signTypeData, nonces } = await startDispute(fixture, escrow.id);
+
+                        const creatorAmount = 0n;
+                        const beneficiaryAmount = escrow.amount;
+
+                        const platformSignature = await signTypeData.resolveDispute(
+                            wallets.platform,
+                            escrow.id,
+                            creatorAmount,
+                            beneficiaryAmount,
+                            await nonces.owner()
+                        );
+
+                        const data = await sut.getEscrow(escrow.id);
+                        await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                        await expect(sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount))
+                            .to.emit(sut, "BridgeFeePaid")
+                            .withArgs(escrow.id, wormholeDestFee);
+                    });
+                });
+
+                it("Should transfer the amount to wormhole", async function () {
+                    const fixture = await loadFixture(deployBridgedEscrowFixture);
+                    const { escrow } = fixture;
+                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
+                        fixture,
+                        escrow.id
+                    );
+
+                    await sut.setElectedSigner(
+                        await signTypeData.electedSigner(
+                            wallets.platform,
+                            escrow.beneficiary,
+                            wallets.kol.address,
+                            await nonces.owner()
+                        ),
+                        escrow.beneficiary,
+                        wallets.kol.address
+                    );
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const platformSignature = await signTypeData.resolveDispute(
+                        wallets.platform,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount,
+                        await nonces.owner()
+                    );
+
+                    const data = await sut.getEscrow(escrow.id);
+                    await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+                    const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+
+                    await sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount);
+
+                    const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+
+                    expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                    expect(wormholeBalanceAfter).to.be.equal(wormholeBalanceBefore + escrow.amount);
+                });
+
+                it("Should forward the call to wormhole", async function () {
+                    const fixture = await loadFixture(deployBridgedEscrowFixture);
+                    const { escrow } = fixture;
+                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
+                        fixture,
+                        escrow.id
+                    );
+
+                    await sut.setElectedSigner(
+                        await signTypeData.electedSigner(
+                            wallets.platform,
+                            escrow.beneficiary,
+                            wallets.kol.address,
+                            await nonces.owner()
+                        ),
+                        escrow.beneficiary,
+                        wallets.kol.address
+                    );
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const platformSignature = await signTypeData.resolveDispute(
+                        wallets.platform,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount,
+                        await nonces.owner()
+                    );
+
+                    const data = await sut.getEscrow(escrow.id);
+                    await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                    await expect(sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount))
+                        .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                        .withArgs(usdc.target, escrow.amount, nativeDrop, wormholeDest, escrow.beneficiary);
+                });
+
+                it("Should emit the EscrowReleased event", async function () {
+                    const fixture = await loadFixture(deployBridgedEscrowFixture);
+                    const { escrow } = fixture;
+                    const { sut, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
+                        fixture,
+                        escrow.id
+                    );
+
+                    await sut.setElectedSigner(
+                        await signTypeData.electedSigner(
+                            wallets.platform,
+                            escrow.beneficiary,
+                            wallets.kol.address,
+                            await nonces.owner()
+                        ),
+                        escrow.beneficiary,
+                        wallets.kol.address
+                    );
+
+                    const messageSequence = 15;
+                    await wormholeRelayer.mockMessageSequence(messageSequence);
+
+                    const creatorAmount = 0n;
+                    const beneficiaryAmount = escrow.amount;
+
+                    const platformSignature = await signTypeData.resolveDispute(
+                        wallets.platform,
+                        escrow.id,
+                        creatorAmount,
+                        beneficiaryAmount,
+                        await nonces.owner()
+                    );
+
+                    const data = await sut.getEscrow(escrow.id);
+                    await time.setNextBlockTimestamp(data.allowPlatformResolutionTimestamp);
+
+                    await expect(sut.resolveDispute(platformSignature, escrow.id, creatorAmount, beneficiaryAmount))
+                        .to.emit(sut, "EscrowReleased")
+                        .withArgs(escrow.id, escrow.amount, messageSequence);
+                });
+            });
         });
     });
 

@@ -11,6 +11,8 @@ import { IUSDC } from "./interfaces/IUSDC.sol";
 import { IWormholeRelayer } from "./interfaces/IWormholeRelayer.sol";
 import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
 
+// TODO: Allow benificiary to change.
+
 /**
  * @title CrossChainEscrow
  * @author @builtbyfrancis
