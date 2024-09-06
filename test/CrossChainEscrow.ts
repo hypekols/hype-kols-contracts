@@ -2,8 +2,9 @@ import { time, loadFixture } from "@nomicfoundation/hardhat-toolbox/network-help
 import { expect } from "chai";
 import hre from "hardhat";
 import { ethers } from "hardhat";
-import { BigNumberish, Signature } from "ethers";
+import { AddressLike, BigNumberish, BytesLike, Signature } from "ethers";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
+import { setPredictableTimestamp } from "./helpers";
 
 const wormholeSource = 10002;
 const wormholeDest = 10003;
@@ -16,6 +17,8 @@ const initialOrgBalance = ethers.parseUnits("1000000", 6);
 
 describe("CrossChainEscrow", function () {
     type Fixture = Awaited<ReturnType<typeof deployFixture>>;
+
+    // ############################ COMMON FIXTURES ############################
 
     async function deployFixture() {
         const network = await ethers.provider.getNetwork();
@@ -44,10 +47,224 @@ describe("CrossChainEscrow", function () {
 
         await usdc.mint(org.address, initialOrgBalance);
 
+        const domains = {
+            crossChainEscrow: {
+                name: "CrossChainEscrow",
+                version: "1",
+                chainId,
+                verifyingContract: crossChainEscrow.target as string,
+            },
+            usdc: {
+                name: "USDC",
+                version: "1",
+                chainId,
+                verifyingContract: usdc.target as string,
+            },
+        };
+
+        const types = {
+            create: {
+                CreateEscrow: [
+                    { name: "escrowReference", type: "bytes32" },
+                    { name: "creator", type: "address" },
+                    { name: "wormholeChainId", type: "uint16" },
+                    { name: "beneficiary", type: "bytes32" },
+                    { name: "amount", type: "uint256" },
+                    { name: "serviceFee", type: "uint256" },
+                    { name: "nonce", type: "uint256" },
+                ],
+            },
+            increase: {
+                IncreaseEscrow: [
+                    { name: "escrowId", type: "uint256" },
+                    { name: "amount", type: "uint256" },
+                    { name: "serviceFee", type: "uint256" },
+                    { name: "nonce", type: "uint256" },
+                ],
+            },
+            release: {
+                ReleaseEscrow: [
+                    { name: "escrowId", type: "uint256" },
+                    { name: "amount", type: "uint256" },
+                    { name: "nonce", type: "uint256" },
+                ],
+            },
+            electedSigner: {
+                ElectedSigner: [
+                    { name: "nonEvmSigner", type: "bytes32" },
+                    { name: "electedSigner", type: "address" },
+                    { name: "nonce", type: "uint256" },
+                ],
+            },
+            amicable: {
+                ResolveAmicably: [
+                    { name: "escrowId", type: "uint256" },
+                    { name: "amount", type: "uint256" },
+                ],
+            },
+            startDispute: {
+                StartDispute: [
+                    { name: "escrowId", type: "uint256" },
+                    { name: "nonce", type: "uint256" },
+                ],
+            },
+            resolveDispute: {
+                ResolveDispute: [
+                    { name: "escrowId", type: "uint256" },
+                    { name: "creatorAmount", type: "uint256" },
+                    { name: "beneficiaryAmount", type: "uint256" },
+                    { name: "nonce", type: "uint256" },
+                ],
+            },
+            permit: {
+                Permit: [
+                    { name: "owner", type: "address" },
+                    { name: "spender", type: "address" },
+                    { name: "value", type: "uint256" },
+                    { name: "nonce", type: "uint256" },
+                    { name: "deadline", type: "uint256" },
+                ],
+            },
+        };
+
+        async function signCreateEscrow(
+            signer: HardhatEthersSigner,
+            escrowReference: BytesLike,
+            creator: AddressLike,
+            wormholeChainId: number,
+            beneficiary: BytesLike,
+            amount: bigint,
+            serviceFee: bigint,
+            nonce: bigint
+        ) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.create, {
+                    escrowReference,
+                    creator,
+                    wormholeChainId,
+                    beneficiary,
+                    amount,
+                    serviceFee,
+                    nonce,
+                })
+            );
+        }
+
+        async function signIncreaseEscrow(
+            signer: HardhatEthersSigner,
+            escrowId: bigint,
+            amount: bigint,
+            serviceFee: bigint,
+            nonce: bigint
+        ) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.increase, {
+                    escrowId,
+                    amount,
+                    serviceFee,
+                    nonce,
+                })
+            );
+        }
+
+        async function signReleaseEscrow(signer: HardhatEthersSigner, escrowId: bigint, amount: bigint, nonce: bigint) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.release, {
+                    escrowId,
+                    amount,
+                    nonce,
+                })
+            );
+        }
+
+        async function signElectedSigner(
+            signer: HardhatEthersSigner,
+            nonEvmSigner: BytesLike,
+            electedSigner: string,
+            nonce: bigint
+        ) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.electedSigner, {
+                    nonEvmSigner,
+                    electedSigner,
+                    nonce,
+                })
+            );
+        }
+
+        async function signAmicableResolution(signer: HardhatEthersSigner, escrowId: bigint, amount: bigint) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.amicable, {
+                    escrowId,
+                    amount,
+                })
+            );
+        }
+
+        async function signStartDispute(signer: HardhatEthersSigner, escrowId: bigint, nonce: bigint) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.startDispute, {
+                    escrowId,
+                    nonce,
+                })
+            );
+        }
+
+        async function signResolveDispute(
+            signer: HardhatEthersSigner,
+            escrowId: bigint,
+            creatorAmount: bigint,
+            beneficiaryAmount: bigint,
+            nonce: bigint
+        ) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.resolveDispute, {
+                    escrowId,
+                    creatorAmount,
+                    beneficiaryAmount,
+                    nonce,
+                })
+            );
+        }
+
+        async function signPermit(
+            signer: HardhatEthersSigner,
+            owner: string,
+            spender: string,
+            value: BigNumberish,
+            nonce: bigint,
+            deadline: bigint
+        ) {
+            return signer.signTypedData(domains.usdc, types.permit, {
+                owner,
+                spender,
+                value,
+                nonce,
+                deadline,
+            });
+        }
+
         return {
             sut: crossChainEscrow,
             usdc,
             wormholeRelayer,
+            domains,
+            types,
+            signTypeData: {
+                create: signCreateEscrow,
+                increase: signIncreaseEscrow,
+                release: signReleaseEscrow,
+                electedSigner: signElectedSigner,
+                amicable: signAmicableResolution,
+                startDispute: signStartDispute,
+                resolveDispute: signResolveDispute,
+                permit: signPermit,
+            },
+            nonces: {
+                org: () => usdc.nonces(org.address),
+                platform: () => crossChainEscrow.nonces(platform.address),
+                owner: () => crossChainEscrow.nonces(owner.address),
+            },
             wallets: {
                 owner,
                 platform,
@@ -55,117 +272,49 @@ describe("CrossChainEscrow", function () {
                 org,
                 kol,
             },
-            typeData: {
-                domain: {
-                    crossChainEscrow: {
-                        name: "CrossChainEscrow",
-                        version: "1",
-                        chainId,
-                        verifyingContract: crossChainEscrow.target as string,
-                    },
-                    usdc: {
-                        name: "USDC",
-                        version: "1",
-                        chainId,
-                        verifyingContract: usdc.target as string,
-                    },
-                },
-                create: {
-                    CreateEscrow: [
-                        { name: "escrowReference", type: "bytes32" },
-                        { name: "creator", type: "address" },
-                        { name: "wormholeChainId", type: "uint16" },
-                        { name: "beneficiary", type: "bytes32" },
-                        { name: "amount", type: "uint256" },
-                        { name: "serviceFee", type: "uint256" },
-                        { name: "nonce", type: "uint256" },
-                    ],
-                },
-                increase: {
-                    IncreaseEscrow: [
-                        { name: "escrowId", type: "uint256" },
-                        { name: "amount", type: "uint256" },
-                        { name: "serviceFee", type: "uint256" },
-                        { name: "nonce", type: "uint256" },
-                    ],
-                },
-                release: {
-                    ReleaseEscrow: [
-                        { name: "escrowId", type: "uint256" },
-                        { name: "amount", type: "uint256" },
-                        { name: "nonce", type: "uint256" },
-                    ],
-                },
-                electedSigner: {
-                    ElectedSigner: [
-                        { name: "nonEvmSigner", type: "bytes32" },
-                        { name: "electedSigner", type: "address" },
-                        { name: "nonce", type: "uint256" },
-                    ],
-                },
-                amicable: {
-                    ResolveAmicably: [
-                        { name: "escrowId", type: "uint256" },
-                        { name: "amount", type: "uint256" },
-                    ],
-                },
-                startDispute: {
-                    StartDispute: [
-                        { name: "escrowId", type: "uint256" },
-                        { name: "nonce", type: "uint256" },
-                    ],
-                },
-                resolveDispute: {
-                    ResolveDispute: [
-                        { name: "escrowId", type: "uint256" },
-                        { name: "creatorAmount", type: "uint256" },
-                        { name: "beneficiaryAmount", type: "uint256" },
-                        { name: "nonce", type: "uint256" },
-                    ],
-                },
-                permit: {
-                    Permit: [
-                        { name: "owner", type: "address" },
-                        { name: "spender", type: "address" },
-                        { name: "value", type: "uint256" },
-                        { name: "nonce", type: "uint256" },
-                        { name: "deadline", type: "uint256" },
-                    ],
-                },
-            },
         };
     }
 
-    async function addEscrow(fixture: Fixture, bridged: boolean) {
+    async function deployDirectEscrowFixture() {
+        const fixture = await loadFixture(deployFixture);
+
+        const wormholeChainId = wormholeSource;
+        const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+
+        return createEscrow(fixture, wormholeChainId, beneficiary);
+    }
+
+    async function deployBridgedEscrowFixture() {
+        const fixture = await loadFixture(deployFixture);
+
+        const wormholeChainId = wormholeDest;
+        const beneficiary = ethers.randomBytes(32);
+
+        return createEscrow(fixture, wormholeChainId, beneficiary);
+    }
+
+    // ############################ HELPERS ############################
+
+    async function createEscrow(fixture: Fixture, wormholeChainId: number, beneficiary: BytesLike) {
+        const { sut, signTypeData, wallets, nonces } = fixture;
+
         const escrowReference = ethers.randomBytes(32);
-        const beneficiary = bridged ? ethers.randomBytes(32) : ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+        const creator = wallets.org.address;
         const amount = ethers.parseUnits("100", 6);
         const serviceFee = ethers.parseUnits("1", 6);
-        const nonce = 0;
+        const nonce = await nonces.org();
 
-        const deadline = (await time.latest()) + 60 * 60;
-        const permit = await fixture.wallets.org.signTypedData(fixture.typeData.domain.usdc, fixture.typeData.permit, {
-            owner: fixture.wallets.org.address,
-            spender: fixture.sut.target,
-            value: amount + serviceFee,
-            nonce,
-            deadline,
-        });
+        const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
-        const platformSignature = Signature.from(
-            await fixture.wallets.platform.signTypedData(
-                fixture.typeData.domain.crossChainEscrow,
-                fixture.typeData.create,
-                {
-                    escrowReference,
-                    creator: fixture.wallets.org.address,
-                    wormholeChainId: bridged ? wormholeDest : wormholeSource,
-                    beneficiary,
-                    amount,
-                    serviceFee,
-                    nonce,
-                }
-            )
+        const platformSignature = await signTypeData.create(
+            wallets.platform,
+            escrowReference,
+            creator,
+            wormholeChainId,
+            beneficiary,
+            amount,
+            serviceFee,
+            nonce
         );
 
         const amountsStruct = {
@@ -173,11 +322,13 @@ describe("CrossChainEscrow", function () {
             serviceFee,
         };
 
-        await fixture.sut.createEscrow(
+        const id = await sut.nextEscrowId();
+
+        await sut.createEscrow(
             platformSignature,
             escrowReference,
-            fixture.wallets.org.address,
-            bridged ? wormholeDest : wormholeSource,
+            creator,
+            wormholeChainId,
             beneficiary,
             amountsStruct,
             permit,
@@ -187,23 +338,35 @@ describe("CrossChainEscrow", function () {
         return {
             ...fixture,
             escrow: {
+                id,
                 escrowReference,
+                creator,
+                wormholeChainId,
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce,
-                deadline,
             },
         };
     }
 
-    async function setPredictableTimestamp() {
-        const now = BigInt(await time.latest());
-        const next = now + 1n;
-        await time.setNextBlockTimestamp(next);
+    async function getPermit(fixture: Fixture, amount: bigint) {
+        const { sut, wallets, signTypeData, nonces } = fixture;
 
-        return next;
+        const deadline = BigInt(await time.latest()) + 60n;
+        return {
+            permit: await signTypeData.permit(
+                wallets.org,
+                wallets.org.address,
+                sut.target.toString(),
+                amount,
+                await nonces.org(),
+                deadline
+            ),
+            deadline,
+        };
     }
+
+    // ############################ TESTS ############################
 
     describe("Deployment", function () {
         it("Should set the usdc address", async function () {
@@ -249,7 +412,7 @@ describe("CrossChainEscrow", function () {
         });
 
         it("Should set the domain separator", async function () {
-            const { sut, typeData } = await loadFixture(deployFixture);
+            const { sut, domains } = await loadFixture(deployFixture);
 
             const typeHash = ethers.keccak256(
                 ethers.toUtf8Bytes("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
@@ -260,10 +423,10 @@ describe("CrossChainEscrow", function () {
                     ["bytes32", "bytes32", "bytes32", "uint256", "address"],
                     [
                         typeHash,
-                        ethers.keccak256(ethers.toUtf8Bytes(typeData.domain.crossChainEscrow.name)),
-                        ethers.keccak256(ethers.toUtf8Bytes(typeData.domain.crossChainEscrow.version)),
-                        typeData.domain.crossChainEscrow.chainId,
-                        typeData.domain.crossChainEscrow.verifyingContract,
+                        ethers.keccak256(ethers.toUtf8Bytes(domains.crossChainEscrow.name)),
+                        ethers.keccak256(ethers.toUtf8Bytes(domains.crossChainEscrow.version)),
+                        domains.crossChainEscrow.chainId,
+                        domains.crossChainEscrow.verifyingContract,
                     ]
                 )
             );
@@ -273,8 +436,339 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("createEscrow", function () {
-        it("Should ", async function () {
-            const { sut } = await loadFixture(deployFixture);
+        const escrowReference = ethers.randomBytes(32);
+        const amount = ethers.parseUnits("100", 6);
+        const serviceFee = ethers.parseUnits("1", 6);
+
+        it("Should revert if the signature is invalid", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, signTypeData, wallets, nonces } = fixture;
+
+            const creator = wallets.org.address;
+            const wormholeChainId = wormholeSource;
+            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const nonce = await nonces.org();
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.create(
+                wallets.org, // invalid signer
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amount,
+                serviceFee,
+                nonce
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.createEscrow(
+                    platformSignature,
+                    escrowReference,
+                    creator,
+                    wormholeChainId,
+                    beneficiary,
+                    amountsStruct,
+                    permit,
+                    deadline
+                )
+            ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
+        });
+
+        it("Should revert if the escrow is bridged and no contract is registered by wormhole", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, signTypeData, wallets, nonces } = fixture;
+
+            const creator = wallets.org.address;
+            const wormholeChainId = 999; // invalid chain id
+            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const nonce = await nonces.org();
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.create(
+                wallets.platform,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amount,
+                serviceFee,
+                nonce
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.createEscrow(
+                    platformSignature,
+                    escrowReference,
+                    creator,
+                    wormholeChainId,
+                    beneficiary,
+                    amountsStruct,
+                    permit,
+                    deadline
+                )
+            ).to.be.revertedWithCustomError(sut, "WormholeNotRegistered");
+        });
+
+        it("Should revert if the permit has an invalid signer", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, usdc, signTypeData, wallets, nonces } = fixture;
+
+            const creator = wallets.org.address;
+            const wormholeChainId = wormholeSource;
+            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const nonce = await nonces.org();
+
+            const deadline = BigInt(await time.latest()) + 60n;
+            const permit = await signTypeData.permit(
+                wallets.platform, // invalid signer
+                wallets.org.address,
+                sut.target.toString(),
+                amount,
+                await nonces.org(),
+                deadline
+            );
+
+            const platformSignature = await signTypeData.create(
+                wallets.platform,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amount,
+                serviceFee,
+                nonce
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.createEscrow(
+                    platformSignature,
+                    escrowReference,
+                    creator,
+                    wormholeChainId,
+                    beneficiary,
+                    amountsStruct,
+                    permit,
+                    deadline
+                )
+            ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+        });
+
+        it("Should revert if the permit has an invalid amount", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, usdc, signTypeData, wallets, nonces } = fixture;
+
+            const creator = wallets.org.address;
+            const wormholeChainId = wormholeSource;
+            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const nonce = await nonces.org();
+            const { permit, deadline } = await getPermit(fixture, amount); // missing service fee
+
+            const platformSignature = await signTypeData.create(
+                wallets.platform,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amount,
+                serviceFee,
+                nonce
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.createEscrow(
+                    platformSignature,
+                    escrowReference,
+                    creator,
+                    wormholeChainId,
+                    beneficiary,
+                    amountsStruct,
+                    permit,
+                    deadline
+                )
+            ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+        });
+
+        it("Should create a direct escrow", async function () {
+            const { sut, escrow } = await loadFixture(deployDirectEscrowFixture);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+
+            expect(escrowData.wormholeChainId).to.be.equal(wormholeSource);
+
+            expect(escrowData.amount).to.be.equal(escrow.amount);
+            expect(escrowData.creator).to.be.equal(escrow.creator);
+            expect(escrowData.allowPlatformResolutionTimestamp).to.be.equal(0);
+            expect(escrowData.beneficiary).to.be.equal(escrow.beneficiary);
+        });
+
+        it("Should create a bridged escrow", async function () {
+            const { sut, escrow } = await loadFixture(deployBridgedEscrowFixture);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+
+            expect(escrowData.wormholeChainId).to.be.equal(wormholeDest);
+
+            expect(escrowData.amount).to.be.equal(escrow.amount);
+            expect(escrowData.creator).to.be.equal(escrow.creator);
+            expect(escrowData.allowPlatformResolutionTimestamp).to.be.equal(0);
+            expect(escrowData.beneficiary).to.equal(ethers.hexlify(escrow.beneficiary));
+        });
+
+        it("Should custody the USDC", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, usdc, signTypeData, wallets, nonces } = fixture;
+
+            const creator = wallets.org.address;
+            const wormholeChainId = wormholeSource;
+            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const nonce = await nonces.org();
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.create(
+                wallets.platform,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amount,
+                serviceFee,
+                nonce
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            const sutBalanceBefore = await usdc.balanceOf(sut.target);
+            const orgBalanceBefore = await usdc.balanceOf(wallets.org.address);
+            const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
+
+            await sut.createEscrow(
+                platformSignature,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amountsStruct,
+                permit,
+                deadline
+            );
+
+            const sutBalanceAfter = await usdc.balanceOf(sut.target);
+            const orgBalanceAfter = await usdc.balanceOf(wallets.org.address);
+            const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
+
+            expect(sutBalanceAfter).to.be.equal(sutBalanceBefore + amount);
+            expect(orgBalanceAfter).to.be.equal(orgBalanceBefore - amount - serviceFee);
+            expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore + serviceFee);
+        });
+
+        it("Should emit the EscrowCreated event", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, signTypeData, wallets, nonces } = fixture;
+
+            const creator = wallets.org.address;
+            const wormholeChainId = wormholeSource;
+            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const nonce = await nonces.org();
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.create(
+                wallets.platform,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amount,
+                serviceFee,
+                nonce
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            const id = await sut.nextEscrowId();
+
+            await expect(
+                sut.createEscrow(
+                    platformSignature,
+                    escrowReference,
+                    creator,
+                    wormholeChainId,
+                    beneficiary,
+                    amountsStruct,
+                    permit,
+                    deadline
+                )
+            )
+                .to.emit(sut, "EscrowCreated")
+                .withArgs(id, escrowReference, creator, wormholeChainId, beneficiary, amount, serviceFee);
+        });
+
+        it("Should increment the nextEscrowId", async function () {
+            const fixture = await loadFixture(deployFixture);
+            const { sut, signTypeData, wallets, nonces } = fixture;
+
+            const creator = wallets.org.address;
+            const wormholeChainId = wormholeSource;
+            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const nonce = await nonces.org();
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.create(
+                wallets.platform,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amount,
+                serviceFee,
+                nonce
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            const id = await sut.nextEscrowId();
+
+            await sut.createEscrow(
+                platformSignature,
+                escrowReference,
+                creator,
+                wormholeChainId,
+                beneficiary,
+                amountsStruct,
+                permit,
+                deadline
+            );
+
+            expect(await sut.nextEscrowId()).to.be.equal(id + 1n);
         });
     });
 
@@ -309,117 +803,65 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("startDispute", function () {
-        async function signStartDispute(fixture: Fixture, signer: HardhatEthersSigner, escrowId: BigNumberish) {
-            return Signature.from(
-                await signer.signTypedData(fixture.typeData.domain.crossChainEscrow, fixture.typeData.startDispute, {
-                    escrowId,
-                    nonce: await fixture.sut.nonces(fixture.wallets.owner.address),
-                })
-            );
-        }
-
         it("Should revert if the escrow does not exist", async function () {
-            const fixture = await loadFixture(deployFixture);
-            const { sut, wallets } = fixture;
+            const { sut, signTypeData, escrow, wallets, nonces } = await loadFixture(deployDirectEscrowFixture);
 
-            const escrowId = 0;
-            const signature = await signStartDispute(fixture, wallets.platform, escrowId);
+            const missingEscrowId = escrow.id + 1n;
 
-            await expect(sut.startDispute(signature, escrowId)).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+            const signature = await signTypeData.startDispute(wallets.platform, missingEscrowId, await nonces.owner());
+
+            await expect(sut.startDispute(signature, missingEscrowId)).to.be.revertedWithCustomError(
+                sut,
+                "EscrowNotFound"
+            );
         });
 
         it("Should revert if the signature is invalid", async function () {
-            const fixture = await addEscrow(await loadFixture(deployFixture), false);
-            const { sut, wallets } = fixture;
+            const { sut, signTypeData, escrow, wallets, nonces } = await loadFixture(deployDirectEscrowFixture);
 
-            const escrowId = 0;
-            const signature = await signStartDispute(fixture, wallets.org, escrowId);
+            const signature = await signTypeData.startDispute(wallets.platform, escrow.id + 1n, await nonces.owner());
 
-            await expect(sut.startDispute(signature, escrowId)).to.be.revertedWithCustomError(
+            await expect(sut.startDispute(signature, escrow.id)).to.be.revertedWithCustomError(
                 sut,
                 "UnauthorizedSender"
             );
         });
 
         it("Should revert if the resolution process has already started", async function () {
-            const fixture = await addEscrow(await loadFixture(deployFixture), false);
-            const { sut, wallets } = fixture;
+            const { sut, signTypeData, escrow, wallets, nonces } = await loadFixture(deployDirectEscrowFixture);
 
-            const escrowId = 0;
+            let signature = await signTypeData.startDispute(wallets.platform, escrow.id, await nonces.owner());
+            await sut.startDispute(signature, escrow.id);
 
-            let signature = await signStartDispute(fixture, wallets.platform, escrowId);
-            await sut.startDispute(signature, escrowId);
-
-            signature = await signStartDispute(fixture, wallets.platform, escrowId);
-            await expect(sut.startDispute(signature, escrowId)).to.be.revertedWithCustomError(sut, "AlreadyStarted");
+            signature = await signTypeData.startDispute(wallets.platform, escrow.id, await nonces.owner());
+            await expect(sut.startDispute(signature, escrow.id)).to.be.revertedWithCustomError(sut, "AlreadyStarted");
         });
 
         it("Should set the allowPlatformResolutionTimestamp value to a timestamp 3 days in the future", async function () {
-            const fixture = await addEscrow(await loadFixture(deployFixture), false);
-            const { sut, wallets } = fixture;
+            const { sut, signTypeData, escrow, wallets, nonces } = await loadFixture(deployDirectEscrowFixture);
+
+            const signature = await signTypeData.startDispute(wallets.platform, escrow.id, await nonces.owner());
 
             const nextTimestamp = await setPredictableTimestamp();
+            await sut.startDispute(signature, escrow.id);
 
-            const escrowId = 0;
-            const signature = await signStartDispute(fixture, wallets.platform, escrowId);
-
-            await sut.startDispute(signature, escrowId);
-
-            const escrow = await sut.getEscrow(escrowId);
-            expect(escrow.allowPlatformResolutionTimestamp).to.be.equal(nextTimestamp + threeDays);
+            const escrowData = await sut.getEscrow(escrow.id);
+            expect(escrowData.allowPlatformResolutionTimestamp).to.be.equal(nextTimestamp + threeDays);
         });
 
         it("Should emit the DisputeStarted event", async function () {
-            const fixture = await addEscrow(await loadFixture(deployFixture), false);
-            const { sut, wallets } = fixture;
+            const { sut, signTypeData, escrow, wallets, nonces } = await loadFixture(deployDirectEscrowFixture);
+
+            const signature = await signTypeData.startDispute(wallets.platform, escrow.id, await nonces.owner());
 
             const nextTimestamp = await setPredictableTimestamp();
-
-            const escrowId = 0;
-            const signature = await signStartDispute(fixture, wallets.platform, escrowId);
-
-            await expect(sut.startDispute(signature, escrowId))
+            await expect(sut.startDispute(signature, escrow.id))
                 .to.emit(sut, "DisputeStarted")
-                .withArgs(escrowId, nextTimestamp + threeDays);
+                .withArgs(escrow.id, nextTimestamp + threeDays);
         });
     });
 
     describe("resolveDispute", function () {
-        async function startDispute(fixture: Fixture) {
-            const escrowId = 0;
-            const signature = Signature.from(
-                await fixture.wallets.platform.signTypedData(
-                    fixture.typeData.domain.crossChainEscrow,
-                    fixture.typeData.startDispute,
-                    {
-                        escrowId,
-                        nonce: await fixture.sut.nonces(fixture.wallets.owner.address),
-                    }
-                )
-            );
-
-            await fixture.sut.startDispute(signature, escrowId);
-
-            return fixture;
-        }
-
-        async function signResolveDispute(
-            fixture: Fixture,
-            signer: HardhatEthersSigner,
-            escrowId: BigNumberish,
-            creatorAmount: BigNumberish,
-            beneficiaryAmount: BigNumberish
-        ) {
-            return Signature.from(
-                await signer.signTypedData(fixture.typeData.domain.crossChainEscrow, fixture.typeData.resolveDispute, {
-                    escrowId,
-                    creatorAmount,
-                    beneficiaryAmount,
-                    nonce: await fixture.sut.nonces(fixture.wallets.owner.address),
-                })
-            );
-        }
-
         it("Should ", async function () {
             const { sut } = await loadFixture(deployFixture);
         });
