@@ -4,6 +4,7 @@ import "@nomicfoundation/hardhat-toolbox";
 
 const COINMARKETCAP_API_KEY = vars.get("COINMARKETCAP_API_KEY");
 const ETHERSCAN_API_KEY = vars.get("ETHERSCAN_API_KEY");
+const BASESCAN_API_KEY = vars.get("BASESCAN_API_KEY");
 const ALCHEMY_API_KEY = vars.get("ALCHEMY_API_KEY");
 
 const config: HardhatUserConfig = {
@@ -24,7 +25,9 @@ const config: HardhatUserConfig = {
     apiKey: {
       mainnet: `${ETHERSCAN_API_KEY}`,
       sepolia: `${ETHERSCAN_API_KEY}`,
-    },
+      base: `${BASESCAN_API_KEY}`,
+      baseSepolia: `${BASESCAN_API_KEY}`,
+    }
   },
   gasReporter: {
     enabled: true,
@@ -39,9 +42,19 @@ const config: HardhatUserConfig = {
       chainId: 1,
       accounts: [PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : `0x${PRIVATE_KEY}`],
     },
+    base: {
+      url: `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+      chainId: 8453,
+      accounts: [PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : `0x${PRIVATE_KEY}`],
+    },
     sepolia: {
       url: `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
       chainId: 11155111,
+      accounts: [PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : `0x${PRIVATE_KEY}`],
+    },
+    baseSepolia: {
+      url: `https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+      chainId: 84532,
       accounts: [PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : `0x${PRIVATE_KEY}`],
     },
   },

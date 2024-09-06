@@ -60,31 +60,31 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
     }
 
     /// @notice The typehash for the create escrow struct.
-    bytes32 public constant CREATE_TYPEHASH =
+    bytes32 private constant CREATE_TYPEHASH =
         keccak256(
             "CreateEscrow(bytes32 escrowReference,address creator,uint16 wormholeChainId,bytes32 beneficiary,uint256 amount,uint256 serviceFee,uint256 nonce)"
         );
 
     /// @notice The typehash for the increase escrow struct.
-    bytes32 public constant INCREASE_TYPEHASH =
+    bytes32 private constant INCREASE_TYPEHASH =
         keccak256("IncreaseEscrow(uint256 escrowId,uint256 amount,uint256 serviceFee,uint256 nonce)");
 
     /// @notice The typehash for the release escrow struct.
-    bytes32 public constant RELEASE_TYPEHASH =
+    bytes32 private constant RELEASE_TYPEHASH =
         keccak256("ReleaseEscrow(uint256 escrowId,uint256 amount,uint256 nonce)");
 
     /// @notice The typehash for the elected signer struct.
-    bytes32 public constant ELECTED_SIGNER_TYPEHASH =
+    bytes32 private constant ELECTED_SIGNER_TYPEHASH =
         keccak256("ElectedSigner(bytes32 nonEvmSigner,address electedSigner,uint256 nonce)");
 
     /// @notice The typehash for the resolve amicably struct.
-    bytes32 public constant RESOLVE_AMICABLY_TYPEHASH = keccak256("ResolveAmicably(uint256 escrowId,uint256 amount)");
+    bytes32 private constant RESOLVE_AMICABLY_TYPEHASH = keccak256("ResolveAmicably(uint256 escrowId,uint256 amount)");
 
     /// @notice The typehash for the start dispute struct.
-    bytes32 public constant START_DISPUTE_TYPEHASH = keccak256("StartDispute(uint256 escrowId,uint256 nonce)");
+    bytes32 private constant START_DISPUTE_TYPEHASH = keccak256("StartDispute(uint256 escrowId,uint256 nonce)");
 
     /// @notice The typehash for the resolve dispute struct.
-    bytes32 public constant RESOLVE_DISPUTE_TYPEHASH =
+    bytes32 private constant RESOLVE_DISPUTE_TYPEHASH =
         keccak256("ResolveDispute(uint256 escrowId,uint256 creatorAmount,uint256 beneficiaryAmount,uint256 nonce)");
 
     /// @notice The usdc address on this chain
