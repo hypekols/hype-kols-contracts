@@ -302,7 +302,6 @@ describe("CrossChainEscrow", function () {
         const creator = wallets.org.address;
         const amount = ethers.parseUnits("100", 6);
         const serviceFee = ethers.parseUnits("1", 6);
-        const nonce = await nonces.org();
 
         const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
@@ -314,7 +313,7 @@ describe("CrossChainEscrow", function () {
             beneficiary,
             amount,
             serviceFee,
-            nonce
+            await nonces.owner()
         );
 
         const amountsStruct = {
@@ -447,7 +446,6 @@ describe("CrossChainEscrow", function () {
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
             const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
-            const nonce = await nonces.org();
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -458,7 +456,7 @@ describe("CrossChainEscrow", function () {
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce
+                await nonces.owner()
             );
 
             const amountsStruct = {
@@ -487,7 +485,6 @@ describe("CrossChainEscrow", function () {
             const creator = wallets.org.address;
             const wormholeChainId = 999; // invalid chain id
             const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
-            const nonce = await nonces.org();
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -498,7 +495,7 @@ describe("CrossChainEscrow", function () {
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce
+                await nonces.owner()
             );
 
             const amountsStruct = {
@@ -527,7 +524,6 @@ describe("CrossChainEscrow", function () {
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
             const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
-            const nonce = await nonces.org();
 
             const deadline = BigInt(await time.latest()) + 60n;
             const permit = await signTypeData.permit(
@@ -547,7 +543,7 @@ describe("CrossChainEscrow", function () {
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce
+                await nonces.owner()
             );
 
             const amountsStruct = {
@@ -576,7 +572,6 @@ describe("CrossChainEscrow", function () {
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
             const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
-            const nonce = await nonces.org();
             const { permit, deadline } = await getPermit(fixture, amount); // missing service fee
 
             const platformSignature = await signTypeData.create(
@@ -587,7 +582,7 @@ describe("CrossChainEscrow", function () {
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce
+                await nonces.owner()
             );
 
             const amountsStruct = {
@@ -642,7 +637,6 @@ describe("CrossChainEscrow", function () {
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
             const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
-            const nonce = await nonces.org();
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -653,7 +647,7 @@ describe("CrossChainEscrow", function () {
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce
+                await nonces.owner()
             );
 
             const amountsStruct = {
@@ -692,7 +686,6 @@ describe("CrossChainEscrow", function () {
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
             const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
-            const nonce = await nonces.org();
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -703,7 +696,7 @@ describe("CrossChainEscrow", function () {
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce
+                await nonces.owner()
             );
 
             const amountsStruct = {
@@ -736,7 +729,6 @@ describe("CrossChainEscrow", function () {
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
             const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
-            const nonce = await nonces.org();
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -747,7 +739,7 @@ describe("CrossChainEscrow", function () {
                 beneficiary,
                 amount,
                 serviceFee,
-                nonce
+                await nonces.owner()
             );
 
             const amountsStruct = {
@@ -773,8 +765,203 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("increaseEscrow", function () {
-        it("Should ", async function () {
-            const { sut } = await loadFixture(deployFixture);
+        const amount = ethers.parseUnits("150", 6);
+        const serviceFee = ethers.parseUnits("3", 6);
+
+        it("Should revert if the escrow does not exist", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.increase(
+                wallets.platform,
+                escrow.id + 1n, // invalid escrow id
+                amount,
+                serviceFee,
+                await nonces.owner()
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.increaseEscrow(
+                    platformSignature,
+                    escrow.id + 1n, // invalid escrow id
+                    amountsStruct,
+                    permit,
+                    deadline
+                )
+            ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the signature is invalid", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.increase(
+                wallets.org, // invalid signer
+                escrow.id,
+                amount,
+                serviceFee,
+                await nonces.owner()
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.increaseEscrow(platformSignature, escrow.id, amountsStruct, permit, deadline)
+            ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
+        });
+
+        it("Should revert if the permit has an invalid signer", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, usdc, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const deadline = BigInt(await time.latest()) + 60n;
+            const permit = await signTypeData.permit(
+                wallets.platform, // invalid signer
+                wallets.org.address,
+                sut.target.toString(),
+                amount,
+                await nonces.org(),
+                deadline
+            );
+
+            const platformSignature = await signTypeData.increase(
+                wallets.platform,
+                escrow.id,
+                amount,
+                serviceFee,
+                await nonces.owner()
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.increaseEscrow(platformSignature, escrow.id, amountsStruct, permit, deadline)
+            ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+        });
+
+        it("Should revert if the permit has an invalid amount", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, usdc, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const { permit, deadline } = await getPermit(fixture, amount); // missing service fee
+
+            const platformSignature = await signTypeData.increase(
+                wallets.platform,
+                escrow.id,
+                amount,
+                serviceFee,
+                await nonces.owner()
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(
+                sut.increaseEscrow(platformSignature, escrow.id, amountsStruct, permit, deadline)
+            ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+        });
+
+        it("Should increment the escrow amount", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.increase(
+                wallets.platform,
+                escrow.id,
+                amount,
+                serviceFee,
+                await nonces.owner()
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            const escrowDataBefore = await sut.getEscrow(escrow.id);
+
+            await sut.increaseEscrow(platformSignature, escrow.id, amountsStruct, permit, deadline);
+
+            const escrowDataAfter = await sut.getEscrow(escrow.id);
+
+            expect(escrowDataAfter.amount).to.be.equal(escrowDataBefore.amount + amount);
+        });
+
+        it("Should custody the USDC", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, usdc, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.increase(
+                wallets.platform,
+                escrow.id,
+                amount,
+                serviceFee,
+                await nonces.owner()
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            const sutBalanceBefore = await usdc.balanceOf(sut.target);
+            const orgBalanceBefore = await usdc.balanceOf(wallets.org.address);
+            const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
+
+            await sut.increaseEscrow(platformSignature, escrow.id, amountsStruct, permit, deadline);
+
+            const sutBalanceAfter = await usdc.balanceOf(sut.target);
+            const orgBalanceAfter = await usdc.balanceOf(wallets.org.address);
+            const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
+
+            expect(sutBalanceAfter).to.be.equal(sutBalanceBefore + amount);
+            expect(orgBalanceAfter).to.be.equal(orgBalanceBefore - amount - serviceFee);
+            expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore + serviceFee);
+        });
+
+        it("Should emit the EscrowIncreased event", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+
+            const platformSignature = await signTypeData.increase(
+                wallets.platform,
+                escrow.id,
+                amount,
+                serviceFee,
+                await nonces.owner()
+            );
+
+            const amountsStruct = {
+                escrow: amount,
+                serviceFee,
+            };
+
+            await expect(sut.increaseEscrow(platformSignature, escrow.id, amountsStruct, permit, deadline))
+                .to.emit(sut, "EscrowIncreased")
+                .withArgs(escrow.id, amount, serviceFee);
         });
     });
 
@@ -791,8 +978,53 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("setElectedSigner", function () {
-        it("Should ", async function () {
-            const { sut } = await loadFixture(deployFixture);
+        const nonEvmSigner = ethers.hexlify(ethers.randomBytes(32));
+
+        it("Should revert if the signature is invalid", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, signTypeData, wallets, nonces } = fixture;
+
+            const platformSignature = await signTypeData.electedSigner(
+                wallets.org, // invalid signer
+                nonEvmSigner,
+                wallets.kol.address,
+                await nonces.owner()
+            );
+
+            await expect(
+                sut.setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address)
+            ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
+        });
+
+        it("Should set the elected signer", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, signTypeData, wallets, nonces } = fixture;
+
+            const platformSignature = await signTypeData.electedSigner(
+                wallets.platform,
+                nonEvmSigner,
+                wallets.kol.address,
+                await nonces.owner()
+            );
+
+            await sut.setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address);
+            expect(await sut.getElectedSigner(nonEvmSigner)).to.be.equal(wallets.kol.address);
+        });
+
+        it("Should emit the SignerElected event", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, signTypeData, wallets, nonces } = fixture;
+
+            const platformSignature = await signTypeData.electedSigner(
+                wallets.platform,
+                nonEvmSigner,
+                wallets.kol.address,
+                await nonces.owner()
+            );
+
+            await expect(sut.setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address))
+                .to.emit(sut, "SignerElected")
+                .withArgs(nonEvmSigner, wallets.kol.address);
         });
     });
 
