@@ -327,7 +327,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
             )
         ) revert InvalidSignature();
 
-        address _beneficiary = _getbeneficiaryAddress(_escrow[_escrowId].beneficiary);
+        address _beneficiary = _getBeneficiaryAddress(_escrow[_escrowId].beneficiary);
         if (
             _beneficiary !=
             _recoverSigner(
@@ -448,14 +448,14 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         _escrow[_escrowId].amount = 0;
 
         if (_creatorAmount > 0) _transferToCreator(_escrowId, _creatorAmount);
-        if (_beneficiaryAmount > 0) _transferTobeneficiary(_escrowId, _beneficiaryAmount);
+        if (_beneficiaryAmount > 0) _transferToBeneficiary(_escrowId, _beneficiaryAmount);
 
         emit DisputeResolved(_escrowId, _creatorAmount, _beneficiaryAmount);
     }
 
     function _releaseEscrow(uint256 _escrowId, uint256 _amount) private {
         _escrow[_escrowId].amount -= _amount;
-        _transferTobeneficiary(_escrowId, _amount);
+        _transferToBeneficiary(_escrowId, _amount);
     }
 
     function _transferToCreator(uint256 _escrowId, uint256 _amount) private {
@@ -464,7 +464,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         emit EscrowRefunded(_escrowId, _amount);
     }
 
-    function _transferTobeneficiary(uint256 _escrowId, uint256 _amount) private {
+    function _transferToBeneficiary(uint256 _escrowId, uint256 _amount) private {
         uint64 messageSequence = 0;
 
         if (_escrow[_escrowId].wormholeChainId == WORMHOLE_CHAIN_ID) {
@@ -474,15 +474,14 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
 
             if (fee > 0) {
                 SafeERC20.safeTransferFrom(USDC, treasury, address(this), fee);
-                USDC.approve(address(WORMHOLE), _amount + fee);
-
                 emit BridgeFeePaid(_escrowId, fee);
             }
 
+            USDC.approve(address(WORMHOLE), _amount + fee);
             messageSequence = WORMHOLE.transferTokensWithRelay(
                 USDC,
                 _amount + fee,
-                _amount,
+                0,
                 _escrow[_escrowId].wormholeChainId,
                 _escrow[_escrowId].beneficiary
             );
@@ -491,7 +490,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         emit EscrowReleased(_escrowId, _amount, messageSequence);
     }
 
-    function _getbeneficiaryAddress(bytes32 _beneficiary) private view returns (address) {
+    function _getBeneficiaryAddress(bytes32 _beneficiary) private view returns (address) {
         return
             _electedSigners[_beneficiary] == address(0)
                 ? _bytes32ToAddress(_beneficiary)

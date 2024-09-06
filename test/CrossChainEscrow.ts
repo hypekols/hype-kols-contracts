@@ -6,9 +6,11 @@ import { AddressLike, BigNumberish, BytesLike, Signature } from "ethers";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import { setPredictableTimestamp } from "./helpers";
 
+const nativeDrop = 0;
+
 const wormholeSource = 10002;
 const wormholeDest = 10003;
-const wormholeDestFee = 20000;
+const wormholeDestFee = 20000n;
 const wormholeDestRelay = ethers.randomBytes(32);
 
 const threeDays = BigInt(60 * 60 * 24 * 3);
@@ -31,7 +33,6 @@ describe("CrossChainEscrow", function () {
         const wormholeRelayer = await WormholeRelayer.deploy();
 
         await wormholeRelayer.waitForDeployment();
-        await wormholeRelayer.mockRelayerFee(wormholeDest, usdc.target, wormholeDestFee);
         await wormholeRelayer.mockContractRegistered(wormholeDest, wormholeDestRelay);
 
         const [owner, platform, treasury, org, kol] = await hre.ethers.getSigners();
@@ -46,6 +47,7 @@ describe("CrossChainEscrow", function () {
         );
 
         await usdc.mint(org.address, initialOrgBalance);
+        await usdc.connect(treasury).approve(crossChainEscrow.target, ethers.MaxUint256);
 
         const domains = {
             crossChainEscrow: {
@@ -279,7 +281,7 @@ describe("CrossChainEscrow", function () {
         const fixture = await loadFixture(deployFixture);
 
         const wormholeChainId = wormholeSource;
-        const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+        const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
 
         return createEscrow(fixture, wormholeChainId, beneficiary);
     }
@@ -445,7 +447,7 @@ describe("CrossChainEscrow", function () {
 
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -484,7 +486,7 @@ describe("CrossChainEscrow", function () {
 
             const creator = wallets.org.address;
             const wormholeChainId = 999; // invalid chain id
-            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -523,7 +525,7 @@ describe("CrossChainEscrow", function () {
 
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
 
             const deadline = BigInt(await time.latest()) + 60n;
             const permit = await signTypeData.permit(
@@ -571,7 +573,7 @@ describe("CrossChainEscrow", function () {
 
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
             const { permit, deadline } = await getPermit(fixture, amount); // missing service fee
 
             const platformSignature = await signTypeData.create(
@@ -636,7 +638,7 @@ describe("CrossChainEscrow", function () {
 
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -685,7 +687,7 @@ describe("CrossChainEscrow", function () {
 
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -728,7 +730,7 @@ describe("CrossChainEscrow", function () {
 
             const creator = wallets.org.address;
             const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadBytes(fixture.wallets.kol.address, 32);
+            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
             const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
 
             const platformSignature = await signTypeData.create(
@@ -966,14 +968,396 @@ describe("CrossChainEscrow", function () {
     });
 
     describe("releaseEscrow", function () {
-        it("Should ", async function () {
-            const { sut } = await loadFixture(deployFixture);
+        it("Should revert if the escrow does not exist", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            await expect(
+                sut.connect(wallets.org).releaseEscrow(escrow.id + 1n, escrow.amount)
+            ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the caller is not the creator", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            await expect(
+                sut.connect(wallets.kol).releaseEscrow(escrow.id, escrow.amount)
+            ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
+        });
+
+        it("Should revert if the amount is too large", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            await expect(sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount + 1n)).to.be.reverted; //underflow
+        });
+
+        it("Should decrement the escrow amount", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            await sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+            expect(escrowData.amount).to.be.equal(0);
+        });
+
+        describe("direct", function () {
+            it("Should transfer the amount to the beneficiary", async function () {
+                const fixture = await loadFixture(deployDirectEscrowFixture);
+                const { sut, usdc, wallets, escrow } = fixture;
+
+                const beneficiaryBalanceBefore = await usdc.balanceOf(wallets.kol.address);
+                const sutBalanceBefore = await usdc.balanceOf(sut.target);
+
+                await sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount);
+
+                const beneficiaryBalanceAfter = await usdc.balanceOf(wallets.kol.address);
+                const sutBalanceAfter = await usdc.balanceOf(sut.target);
+
+                expect(beneficiaryBalanceAfter).to.be.equal(beneficiaryBalanceBefore + escrow.amount);
+                expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+            });
+
+            it("Should emit the EscrowReleased event", async function () {
+                const fixture = await loadFixture(deployDirectEscrowFixture);
+                const { sut, wallets, escrow } = fixture;
+
+                const messageSequence = 0;
+
+                await expect(sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount))
+                    .to.emit(sut, "EscrowReleased")
+                    .withArgs(escrow.id, escrow.amount, messageSequence);
+            });
+        });
+
+        describe("bridged", function () {
+            describe("has fee", function () {
+                let fixture: Awaited<ReturnType<typeof deployBridgedEscrowFixture>>;
+
+                this.beforeEach(async function () {
+                    fixture = await loadFixture(deployBridgedEscrowFixture);
+
+                    await fixture.wormholeRelayer.mockRelayerFee(wormholeDest, fixture.usdc.target, wormholeDestFee);
+                });
+
+                it("Should forward the call to wormhole including the fee", async function () {
+                    const { sut, wormholeRelayer, usdc, wallets, escrow } = fixture;
+
+                    await expect(sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount))
+                        .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                        .withArgs(
+                            usdc.target,
+                            escrow.amount + wormholeDestFee,
+                            nativeDrop,
+                            wormholeDest,
+                            escrow.beneficiary
+                        );
+                });
+
+                it("Should transfer the fee from the treasury", async function () {
+                    const { sut, wormholeRelayer, usdc, wallets, escrow } = fixture;
+
+                    const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+                    const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
+
+                    await sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount);
+
+                    const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+                    const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
+
+                    expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                    expect(wormholeBalanceAfter).to.be.equal(wormholeBalanceBefore + wormholeDestFee + escrow.amount);
+                    expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore - wormholeDestFee);
+                });
+
+                it("Should emit the BridgeFeePaid event", async function () {
+                    const { sut, wallets, escrow } = fixture;
+
+                    await expect(sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount))
+                        .to.emit(sut, "BridgeFeePaid")
+                        .withArgs(escrow.id, wormholeDestFee);
+                });
+            });
+
+            it("Should transfer the amount to wormhole", async function () {
+                const fixture = await loadFixture(deployBridgedEscrowFixture);
+                const { sut, wormholeRelayer, usdc, wallets, escrow } = fixture;
+
+                const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+
+                await sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount);
+
+                const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+
+                expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                expect(wormholeBalanceAfter).to.be.equal(wormholeBalanceBefore + escrow.amount);
+            });
+
+            it("Should forward the call to wormhole", async function () {
+                const fixture = await loadFixture(deployBridgedEscrowFixture);
+                const { sut, wormholeRelayer, usdc, wallets, escrow } = fixture;
+
+                await expect(sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount))
+                    .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                    .withArgs(usdc.target, escrow.amount, nativeDrop, wormholeDest, escrow.beneficiary);
+            });
+
+            it("Should emit the EscrowReleased event", async function () {
+                const fixture = await loadFixture(deployBridgedEscrowFixture);
+                const { sut, wormholeRelayer, wallets, escrow } = fixture;
+
+                const messageSequence = 15;
+                await wormholeRelayer.mockMessageSequence(messageSequence);
+
+                await expect(sut.connect(wallets.org).releaseEscrow(escrow.id, escrow.amount))
+                    .to.emit(sut, "EscrowReleased")
+                    .withArgs(escrow.id, escrow.amount, messageSequence);
+            });
         });
     });
 
     describe("relayedReleaseEscrow", function () {
-        it("Should ", async function () {
-            const { sut } = await loadFixture(deployFixture);
+        it("Should revert if the escrow does not exist", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const creatorSignature = await signTypeData.release(
+                wallets.org,
+                escrow.id,
+                escrow.amount,
+                await nonces.owner()
+            );
+
+            await expect(
+                sut.relayedReleaseEscrow(creatorSignature, escrow.id + 1n, escrow.amount)
+            ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the signer is not the creator", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const creatorSignature = await signTypeData.release(
+                wallets.platform, // invalid signer
+                escrow.id,
+                escrow.amount,
+                await nonces.owner()
+            );
+
+            await expect(
+                sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount)
+            ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
+        });
+
+        it("Should revert if the amount is too large", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const creatorSignature = await signTypeData.release(
+                wallets.org,
+                escrow.id,
+                escrow.amount,
+                await nonces.owner()
+            );
+
+            await expect(sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount + 1n)).to.be.reverted; //underflow
+        });
+
+        it("Should decrement the escrow amount", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const creatorSignature = await signTypeData.release(
+                wallets.org,
+                escrow.id,
+                escrow.amount,
+                await nonces.owner()
+            );
+
+            await sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+            expect(escrowData.amount).to.be.equal(0);
+        });
+
+        describe("direct", function () {
+            it("Should transfer the amount to the beneficiary", async function () {
+                const fixture = await loadFixture(deployDirectEscrowFixture);
+                const { sut, usdc, wallets, signTypeData, escrow, nonces } = fixture;
+
+                const creatorSignature = await signTypeData.release(
+                    wallets.org,
+                    escrow.id,
+                    escrow.amount,
+                    await nonces.owner()
+                );
+
+                const beneficiaryBalanceBefore = await usdc.balanceOf(wallets.kol.address);
+                const sutBalanceBefore = await usdc.balanceOf(sut.target);
+
+                await sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount);
+
+                const beneficiaryBalanceAfter = await usdc.balanceOf(wallets.kol.address);
+                const sutBalanceAfter = await usdc.balanceOf(sut.target);
+
+                expect(beneficiaryBalanceAfter).to.be.equal(beneficiaryBalanceBefore + escrow.amount);
+                expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+            });
+
+            it("Should emit the EscrowReleased event", async function () {
+                const fixture = await loadFixture(deployDirectEscrowFixture);
+                const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+                const creatorSignature = await signTypeData.release(
+                    wallets.org,
+                    escrow.id,
+                    escrow.amount,
+                    await nonces.owner()
+                );
+
+                const messageSequence = 0;
+
+                await expect(sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount))
+                    .to.emit(sut, "EscrowReleased")
+                    .withArgs(escrow.id, escrow.amount, messageSequence);
+            });
+        });
+
+        describe("bridged", function () {
+            describe("has fee", function () {
+                let fixture: Awaited<ReturnType<typeof deployBridgedEscrowFixture>>;
+
+                this.beforeEach(async function () {
+                    fixture = await loadFixture(deployBridgedEscrowFixture);
+
+                    await fixture.wormholeRelayer.mockRelayerFee(wormholeDest, fixture.usdc.target, wormholeDestFee);
+                });
+
+                it("Should forward the call to wormhole including the fee", async function () {
+                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, escrow, nonces } = fixture;
+
+                    const creatorSignature = await signTypeData.release(
+                        wallets.org,
+                        escrow.id,
+                        escrow.amount,
+                        await nonces.owner()
+                    );
+
+                    await expect(sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount))
+                        .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                        .withArgs(
+                            usdc.target,
+                            escrow.amount + wormholeDestFee,
+                            nativeDrop,
+                            wormholeDest,
+                            escrow.beneficiary
+                        );
+                });
+
+                it("Should transfer the fee from the treasury", async function () {
+                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, escrow, nonces } = fixture;
+
+                    const creatorSignature = await signTypeData.release(
+                        wallets.org,
+                        escrow.id,
+                        escrow.amount,
+                        await nonces.owner()
+                    );
+
+                    const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+                    const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
+
+                    await sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount);
+
+                    const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                    const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+                    const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
+
+                    expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                    expect(wormholeBalanceAfter).to.be.equal(wormholeBalanceBefore + wormholeDestFee + escrow.amount);
+                    expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore - wormholeDestFee);
+                });
+
+                it("Should emit the BridgeFeePaid event", async function () {
+                    const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+                    const creatorSignature = await signTypeData.release(
+                        wallets.org,
+                        escrow.id,
+                        escrow.amount,
+                        await nonces.owner()
+                    );
+
+                    await expect(sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount))
+                        .to.emit(sut, "BridgeFeePaid")
+                        .withArgs(escrow.id, wormholeDestFee);
+                });
+            });
+
+            it("Should transfer the amount to wormhole", async function () {
+                const fixture = await loadFixture(deployBridgedEscrowFixture);
+                const { sut, usdc, wormholeRelayer, wallets, signTypeData, escrow, nonces } = fixture;
+
+                const creatorSignature = await signTypeData.release(
+                    wallets.org,
+                    escrow.id,
+                    escrow.amount,
+                    await nonces.owner()
+                );
+
+                const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                const wormholeBalanceBefore = await usdc.balanceOf(wormholeRelayer.target);
+
+                await sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount);
+
+                const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                const wormholeBalanceAfter = await usdc.balanceOf(wormholeRelayer.target);
+
+                expect(sutBalanceAfter).to.be.equal(sutBalanceBefore - escrow.amount);
+                expect(wormholeBalanceAfter).to.be.equal(wormholeBalanceBefore + escrow.amount);
+            });
+
+            it("Should forward the call to wormhole", async function () {
+                const fixture = await loadFixture(deployBridgedEscrowFixture);
+                const { sut, usdc, wormholeRelayer, wallets, signTypeData, escrow, nonces } = fixture;
+
+                const creatorSignature = await signTypeData.release(
+                    wallets.org,
+                    escrow.id,
+                    escrow.amount,
+                    await nonces.owner()
+                );
+
+                await expect(sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount))
+                    .to.emit(wormholeRelayer, "TransferTokensWithRelayCalled")
+                    .withArgs(usdc.target, escrow.amount, nativeDrop, wormholeDest, escrow.beneficiary);
+            });
+
+            it("Should emit the EscrowReleased event", async function () {
+                const fixture = await loadFixture(deployBridgedEscrowFixture);
+                const { sut, wormholeRelayer, wallets, signTypeData, escrow, nonces } = fixture;
+
+                const creatorSignature = await signTypeData.release(
+                    wallets.org,
+                    escrow.id,
+                    escrow.amount,
+                    await nonces.owner()
+                );
+
+                const messageSequence = 15;
+                await wormholeRelayer.mockMessageSequence(messageSequence);
+
+                await expect(sut.relayedReleaseEscrow(creatorSignature, escrow.id, escrow.amount))
+                    .to.emit(sut, "EscrowReleased")
+                    .withArgs(escrow.id, escrow.amount, messageSequence);
+            });
         });
     });
 
@@ -981,7 +1365,7 @@ describe("CrossChainEscrow", function () {
         const nonEvmSigner = ethers.hexlify(ethers.randomBytes(32));
 
         it("Should revert if the signature is invalid", async function () {
-            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const fixture = await loadFixture(deployFixture);
             const { sut, signTypeData, wallets, nonces } = fixture;
 
             const platformSignature = await signTypeData.electedSigner(
@@ -997,7 +1381,7 @@ describe("CrossChainEscrow", function () {
         });
 
         it("Should set the elected signer", async function () {
-            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const fixture = await loadFixture(deployFixture);
             const { sut, signTypeData, wallets, nonces } = fixture;
 
             const platformSignature = await signTypeData.electedSigner(
@@ -1012,7 +1396,7 @@ describe("CrossChainEscrow", function () {
         });
 
         it("Should emit the SignerElected event", async function () {
-            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const fixture = await loadFixture(deployFixture);
             const { sut, signTypeData, wallets, nonces } = fixture;
 
             const platformSignature = await signTypeData.electedSigner(
