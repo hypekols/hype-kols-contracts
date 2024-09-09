@@ -20,12 +20,12 @@ abstract contract Digests {
         keccak256("ElectEvmAddress(bytes32 nonEvmAddress,address electedAddress,uint256 nonce)");
 
     bytes32 private constant RESOLVE_AMICABLY_TYPEHASH =
-        keccak256("ResolveAmicably(uint256 escrowId,uint256 amount,uint256 nonce)"); // TODO: Add deadline
+        keccak256("ResolveAmicably(uint256 escrowId,uint256 amount,uint256 deadline)");
 
-    bytes32 private constant START_DISPUTE_TYPEHASH = keccak256("StartDispute(uint256 escrowId,uint256 nonce)");
+    bytes32 private constant START_DISPUTE_TYPEHASH = keccak256("StartDispute(uint256 escrowId)");
 
     bytes32 private constant RESOLVE_DISPUTE_TYPEHASH =
-        keccak256("ResolveDispute(uint256 escrowId,uint256 creatorAmount,uint256 beneficiaryAmount,uint256 nonce)");
+        keccak256("ResolveDispute(uint256 escrowId,uint256 creatorAmount,uint256 beneficiaryAmount)");
 
     // #######################################################################################
 
@@ -106,30 +106,21 @@ abstract contract Digests {
     function _amicableResolutionDigest(
         uint256 _escrowId,
         uint256 _amount,
-        address _resolver
-    ) internal returns (bytes32) {
-        return keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _amount, _useAddressNonce(_resolver)));
+        uint256 _deadline
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _amount, _deadline));
     }
 
-    function _startDisputeDigest(uint256 _escrowId) internal returns (bytes32) {
-        return keccak256(abi.encode(START_DISPUTE_TYPEHASH, _escrowId, _useEscrowNonce(_escrowId)));
+    function _startDisputeDigest(uint256 _escrowId) internal pure returns (bytes32) {
+        return keccak256(abi.encode(START_DISPUTE_TYPEHASH, _escrowId));
     }
 
     function _resolveDisputeDigest(
         uint256 _escrowId,
         uint256 _creatorAmount,
         uint256 _beneficiaryAmount
-    ) internal returns (bytes32) {
-        return
-            keccak256(
-                abi.encode(
-                    RESOLVE_DISPUTE_TYPEHASH,
-                    _escrowId,
-                    _creatorAmount,
-                    _beneficiaryAmount,
-                    _useEscrowNonce(_escrowId)
-                )
-            );
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encode(RESOLVE_DISPUTE_TYPEHASH, _escrowId, _creatorAmount, _beneficiaryAmount));
     }
 
     // #######################################################################################

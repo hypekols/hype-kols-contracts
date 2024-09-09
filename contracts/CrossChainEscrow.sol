@@ -19,6 +19,7 @@ import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
  * Makes use of the wormhole protocol which in turn uses CCTP for cross chain communication.
  */
 contract CrossChainEscrow is Digests, Ownable, EIP712 {
+    error ResolutionDeadlineExceeded();
     error WormholeNotRegistered();
     error UnauthorizedSender();
     error InvalidResolution();
@@ -294,27 +295,33 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
     /// @param _beneficiarySignature The beneficiary signature.
     /// @param _escrowId The escrow id.
     /// @param _creatorAmount The creator amount.
+    /// @param _creatorDeadline The creator deadline.
     /// @param _beneficiaryAmount The beneficiary amount.
+    /// @param _beneficiaryDeadline The beneficiary deadline.
     function amicableResolution(
         Signature calldata _creatorSignature,
         Signature calldata _beneficiarySignature,
         uint256 _escrowId,
         uint256 _creatorAmount,
-        uint256 _beneficiaryAmount
+        uint256 _creatorDeadline,
+        uint256 _beneficiaryAmount,
+        uint256 _beneficiaryDeadline
     ) external onlyExists(_escrowId) {
         if (
             _escrow[_escrowId].creator !=
+            _recoverSigner(_creatorSignature, _amicableResolutionDigest(_escrowId, _creatorAmount, _creatorDeadline))
+        ) revert InvalidSignature();
+
+        if (
+            _getBeneficiaryAddress(_escrow[_escrowId].beneficiary) !=
             _recoverSigner(
-                _creatorSignature,
-                _amicableResolutionDigest(_escrowId, _creatorAmount, _escrow[_escrowId].creator)
+                _beneficiarySignature,
+                _amicableResolutionDigest(_escrowId, _beneficiaryAmount, _beneficiaryDeadline)
             )
         ) revert InvalidSignature();
 
-        address beneficiary = _getBeneficiaryAddress(_escrow[_escrowId].beneficiary);
-        if (
-            beneficiary !=
-            _recoverSigner(_beneficiarySignature, _amicableResolutionDigest(_escrowId, _beneficiaryAmount, beneficiary))
-        ) revert InvalidSignature();
+        if (block.timestamp > _creatorDeadline || block.timestamp > _beneficiaryDeadline)
+            revert ResolutionDeadlineExceeded();
 
         _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
     }
