@@ -45,6 +45,12 @@ async function main() {
 
     await crossChainEscrow.waitForDeployment();
 
+    // NOTE: This should be done by the treasury which might not be the deployer for mainnet
+    const usdc = await ethers.getContractAt("IERC20", usdcAddress[chainIdIndex]);
+    const tx = await usdc.approve(crossChainEscrow.target, ethers.MaxUint256);
+
+    await tx.wait();
+
     console.log("CrossChainEscrow deployed to:", crossChainEscrow.target);
 
     await sleep(20000);
