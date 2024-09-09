@@ -12,8 +12,6 @@ import { IWormholeRelayer } from "./interfaces/IWormholeRelayer.sol";
 import { Digests } from "./lib/Digests.sol";
 import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
 
-// TODO: Allow benificiary to change.
-
 /**
  * @title CrossChainEscrow
  * @author @builtbyfrancis
@@ -47,6 +45,7 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
     event EscrowReleased(uint256 indexed escrow_id, uint256 amount, uint64 wormholeMessageSequence);
     event EscrowRefunded(uint256 indexed escrow_id, uint256 amount);
 
+    event BeneficiaryUpdated(uint256 indexed escrow_id, uint16 wormhole_chain_id, bytes32 beneficiary);
     event SignerElected(bytes32 indexed nonEvmSigner, address electedSigner);
     event BridgeFeePaid(uint256 indexed escrow_id, uint256 amount);
 
@@ -113,6 +112,11 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
 
     modifier onlyCreator(uint256 _escrowId, address _sender) {
         if (_escrow[_escrowId].creator != _sender) revert UnauthorizedSender();
+        _;
+    }
+
+    modifier onlyBeneficiary(uint256 _escrowId, address _sender) {
+        if (_getBeneficiaryAddress(_escrow[_escrowId].beneficiary) != _sender) revert UnauthorizedSender();
         _;
     }
 
@@ -208,6 +212,39 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
         _custodyUSDC(_amounts, _signature, _escrow[_escrowId].creator, _deadline);
 
         emit EscrowIncreased(_escrowId, _amounts.escrow, _amounts.serviceFee);
+    }
+
+    /// @notice Updates the beneficiary of an existing escrow. Can only be called by the beneficiary.
+    /// @param _escrowId The escrow id.
+    /// @param _wormholeChainId The wormhole chain id.
+    /// @param _beneficiary The new beneficiary.
+    function updateBeneficiary(
+        uint256 _escrowId,
+        uint16 _wormholeChainId,
+        bytes32 _beneficiary
+    ) external onlyExists(_escrowId) onlyBeneficiary(_escrowId, msg.sender) {
+        _updateBeneficiary(_escrowId, _wormholeChainId, _beneficiary);
+    }
+
+    /// @notice Relays the update of the beneficiary of an existing escrow. Can only be called with beneficiary permission.
+    /// @param _beneficiarySignature The beneficiary signature.
+    /// @param _escrowId The escrow id.
+    /// @param _wormholeChainId The wormhole chain id.
+    /// @param _beneficiary The new beneficiary.
+    function relayedUpdateBeneficiary(
+        Signature calldata _beneficiarySignature,
+        uint256 _escrowId,
+        uint16 _wormholeChainId,
+        bytes32 _beneficiary
+    )
+        external
+        onlyExists(_escrowId)
+        onlyBeneficiary(
+            _escrowId,
+            _recoverSigner(_beneficiarySignature, _updateBeneficiaryDigest(_escrowId, _wormholeChainId, _beneficiary))
+        )
+    {
+        _updateBeneficiary(_escrowId, _wormholeChainId, _beneficiary);
     }
 
     /// @notice Releases an existing escrow. Can only be called by the creator.
@@ -408,6 +445,16 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
         }
 
         emit EscrowReleased(_escrowId, _amount, messageSequence);
+    }
+
+    function _updateBeneficiary(uint256 _escrowId, uint16 _wormholeChainId, bytes32 _beneficiary) private {
+        if (_wormholeChainId != WORMHOLE_CHAIN_ID && WORMHOLE.getRegisteredContract(_wormholeChainId) == bytes32(0))
+            revert WormholeNotRegistered();
+
+        _escrow[_escrowId].wormholeChainId = _wormholeChainId;
+        _escrow[_escrowId].beneficiary = _beneficiary;
+
+        emit BeneficiaryUpdated(_escrowId, _wormholeChainId, _beneficiary);
     }
 
     function _getBeneficiaryAddress(bytes32 _beneficiary) private view returns (address) {

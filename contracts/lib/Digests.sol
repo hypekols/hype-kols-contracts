@@ -10,14 +10,17 @@ abstract contract Digests {
     bytes32 private constant INCREASE_TYPEHASH =
         keccak256("IncreaseEscrow(uint256 escrowId,uint256 amount,uint256 serviceFee,uint256 nonce)");
 
+    bytes32 private constant UPDATE_BENEFICIARY_TYPEHASH =
+        keccak256("UpdateBeneficiary(uint256 escrowId,uint16 wormholeChainId,bytes32 beneficiary,uint256 nonce)");
+
     bytes32 private constant RELEASE_TYPEHASH =
         keccak256("ReleaseEscrow(uint256 escrowId,uint256 amount,uint256 nonce)");
 
     bytes32 private constant ELECTED_SIGNER_TYPEHASH =
-        keccak256("ElectedSigner(bytes32 nonEvmSigner,address electedSigner,uint256 nonce)");
+        keccak256("ElectedSigner(bytes32 nonEvmSigner,address electedSigner,uint256 nonce)"); // TODO: rename to elected evm wallet
 
     bytes32 private constant RESOLVE_AMICABLY_TYPEHASH =
-        keccak256("ResolveAmicably(uint256 escrowId,uint256 amount,uint256 nonce)");
+        keccak256("ResolveAmicably(uint256 escrowId,uint256 amount,uint256 nonce)"); // TODO: Add deadline
 
     bytes32 private constant START_DISPUTE_TYPEHASH = keccak256("StartDispute(uint256 escrowId,uint256 nonce)");
 
@@ -70,6 +73,23 @@ abstract contract Digests {
 
     function _increaseEscrowDigest(uint256 _escrowId, uint256 _amount, uint256 _serviceFee) internal returns (bytes32) {
         return keccak256(abi.encode(INCREASE_TYPEHASH, _escrowId, _amount, _serviceFee, _useEscrowNonce(_escrowId)));
+    }
+
+    function _updateBeneficiaryDigest(
+        uint256 _escrowId,
+        uint16 _wormholeChainId,
+        bytes32 _beneficiary
+    ) internal returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    UPDATE_BENEFICIARY_TYPEHASH,
+                    _escrowId,
+                    _wormholeChainId,
+                    _beneficiary,
+                    _useEscrowNonce(_escrowId)
+                )
+            );
     }
 
     function _releaseEscrowDigest(uint256 _escrowId, uint256 _amount) internal returns (bytes32) {

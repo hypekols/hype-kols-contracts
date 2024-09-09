@@ -84,6 +84,14 @@ describe("CrossChainEscrow", function () {
                     { name: "nonce", type: "uint256" },
                 ],
             },
+            updateBeneficiary: {
+                UpdateBeneficiary: [
+                    { name: "escrowId", type: "uint256" },
+                    { name: "wormholeChainId", type: "uint16" },
+                    { name: "beneficiary", type: "bytes32" },
+                    { name: "nonce", type: "uint256" },
+                ],
+            },
             release: {
                 ReleaseEscrow: [
                     { name: "escrowId", type: "uint256" },
@@ -165,6 +173,23 @@ describe("CrossChainEscrow", function () {
                     escrowId,
                     amount,
                     serviceFee,
+                    nonce,
+                })
+            );
+        }
+
+        async function signUpdateBeneficiary(
+            signer: HardhatEthersSigner,
+            escrowId: bigint,
+            wormholeChainId: number,
+            beneficiary: BytesLike,
+            nonce: bigint
+        ) {
+            return Signature.from(
+                await signer.signTypedData(domains.crossChainEscrow, types.updateBeneficiary, {
+                    escrowId,
+                    wormholeChainId,
+                    beneficiary,
                     nonce,
                 })
             );
@@ -262,6 +287,7 @@ describe("CrossChainEscrow", function () {
             signTypeData: {
                 create: signCreateEscrow,
                 increase: signIncreaseEscrow,
+                updateBeneficiary: signUpdateBeneficiary,
                 release: signReleaseEscrow,
                 electedSigner: signElectedSigner,
                 amicable: signAmicableResolution,
@@ -372,6 +398,8 @@ describe("CrossChainEscrow", function () {
 
         return fixture;
     }
+
+    // TODO: Elect signer helper
 
     async function getPermit(fixture: Fixture, amount: bigint) {
         const { sut, wallets, signTypeData, nonces } = fixture;
@@ -1071,6 +1099,240 @@ describe("CrossChainEscrow", function () {
             await expect(sut.increaseEscrow(platformSignature, escrow.id, amountsStruct, permit, deadline))
                 .to.emit(sut, "EscrowIncreased")
                 .withArgs(escrow.id, amount, serviceFee);
+        });
+    });
+
+    describe("updateBeneficiary", function () {
+        it("Should revert if the escrow does not exist", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            await expect(
+                sut.connect(wallets.kol).updateBeneficiary(escrow.id + 1n, escrow.wormholeChainId, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the caller is not the beneficiary", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            await expect(
+                sut.connect(wallets.org).updateBeneficiary(escrow.id, escrow.wormholeChainId, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
+        });
+
+        it("Should revert if the beneficiary address is not evm", async function () {
+            const fixture = await loadFixture(deployBridgedEscrowFixture);
+            const { sut, escrow } = fixture;
+
+            await expect(
+                sut.updateBeneficiary(escrow.id, escrow.wormholeChainId, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "InvalidAddress");
+        });
+
+        it("Should revert if the chain is not supported", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            await expect(
+                sut.connect(wallets.kol).updateBeneficiary(escrow.id, 999, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "WormholeNotRegistered");
+        });
+
+        it("Should set the beneficiary and wormhole chain id", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            const wormholeChainId = wormholeDest;
+            const beneficiary = ethers.hexlify(ethers.randomBytes(32));
+
+            await sut.connect(wallets.kol).updateBeneficiary(escrow.id, wormholeChainId, beneficiary);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+
+            expect(escrowData.beneficiary).to.be.equal(beneficiary);
+            expect(escrowData.wormholeChainId).to.be.equal(wormholeChainId);
+        });
+
+        it("Should set the beneficiary and wormhole chain id with an elected wallet", async function () {
+            const fixture = await loadFixture(deployBridgedEscrowFixture);
+            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const platformSignature = await signTypeData.electedSigner(
+                wallets.platform,
+                escrow.beneficiary,
+                wallets.kol.address,
+                await nonces.address(wallets.kol.address)
+            );
+
+            await sut.setElectedSigner(platformSignature, escrow.beneficiary, wallets.kol.address);
+
+            const wormholeChainId = wormholeDest;
+            const beneficiary = ethers.hexlify(ethers.randomBytes(32));
+
+            await sut.connect(wallets.kol).updateBeneficiary(escrow.id, wormholeChainId, beneficiary);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+
+            expect(escrowData.beneficiary).to.be.equal(beneficiary);
+            expect(escrowData.wormholeChainId).to.be.equal(wormholeChainId);
+        });
+
+        it("Should emit the BeneficiaryUpdated event", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, escrow } = fixture;
+
+            const wormholeChainId = wormholeDest;
+            const beneficiary = ethers.hexlify(ethers.randomBytes(32));
+
+            await expect(sut.connect(wallets.kol).updateBeneficiary(escrow.id, wormholeChainId, beneficiary))
+                .to.emit(sut, "BeneficiaryUpdated")
+                .withArgs(escrow.id, wormholeChainId, beneficiary);
+        });
+    });
+
+    describe("relayedUpdateBeneficiary", function () {
+        it("Should revert if the escrow does not exist", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const beneficiarySignature = await signTypeData.updateBeneficiary(
+                wallets.kol,
+                escrow.id + 1n,
+                escrow.wormholeChainId,
+                escrow.beneficiary,
+                await nonces.escrow(escrow.id)
+            );
+
+            await expect(
+                sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id + 1n, escrow.wormholeChainId, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
+        });
+
+        it("Should revert if the signer is not the beneficiary", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const beneficiarySignature = await signTypeData.updateBeneficiary(
+                wallets.org,
+                escrow.id,
+                escrow.wormholeChainId,
+                escrow.beneficiary,
+                await nonces.escrow(escrow.id)
+            );
+
+            await expect(
+                sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, escrow.wormholeChainId, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
+        });
+
+        it("Should revert if the beneficiary address is not evm", async function () {
+            const fixture = await loadFixture(deployBridgedEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const beneficiarySignature = await signTypeData.updateBeneficiary(
+                wallets.kol,
+                escrow.id,
+                escrow.wormholeChainId,
+                escrow.beneficiary,
+                await nonces.escrow(escrow.id)
+            );
+
+            await expect(
+                sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, escrow.wormholeChainId, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "InvalidAddress");
+        });
+
+        it("Should revert if the chain is not supported", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const beneficiarySignature = await signTypeData.updateBeneficiary(
+                wallets.kol,
+                escrow.id,
+                999,
+                escrow.beneficiary,
+                await nonces.escrow(escrow.id)
+            );
+
+            await expect(
+                sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, 999, escrow.beneficiary)
+            ).to.be.revertedWithCustomError(sut, "WormholeNotRegistered");
+        });
+
+        it("Should set the beneficiary and wormhole chain id", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const wormholeChainId = wormholeDest;
+            const beneficiary = ethers.hexlify(ethers.randomBytes(32));
+
+            const beneficiarySignature = await signTypeData.updateBeneficiary(
+                wallets.kol,
+                escrow.id,
+                wormholeChainId,
+                beneficiary,
+                await nonces.escrow(escrow.id)
+            );
+
+            await sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, wormholeChainId, beneficiary);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+
+            expect(escrowData.beneficiary).to.be.equal(beneficiary);
+            expect(escrowData.wormholeChainId).to.be.equal(wormholeChainId);
+        });
+
+        it("Should set the beneficiary and wormhole chain id with an elected wallet", async function () {
+            const fixture = await loadFixture(deployBridgedEscrowFixture);
+            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
+
+            const platformSignature = await signTypeData.electedSigner(
+                wallets.platform,
+                escrow.beneficiary,
+                wallets.kol.address,
+                await nonces.address(wallets.kol.address)
+            );
+
+            await sut.setElectedSigner(platformSignature, escrow.beneficiary, wallets.kol.address);
+
+            const wormholeChainId = wormholeDest;
+            const beneficiary = ethers.hexlify(ethers.randomBytes(32));
+
+            const beneficiarySignature = await signTypeData.updateBeneficiary(
+                wallets.kol,
+                escrow.id,
+                wormholeChainId,
+                beneficiary,
+                await nonces.escrow(escrow.id)
+            );
+
+            await sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, wormholeChainId, beneficiary);
+
+            const escrowData = await sut.getEscrow(escrow.id);
+
+            expect(escrowData.beneficiary).to.be.equal(beneficiary);
+            expect(escrowData.wormholeChainId).to.be.equal(wormholeChainId);
+        });
+
+        it("Should emit the BeneficiaryUpdated event", async function () {
+            const fixture = await loadFixture(deployDirectEscrowFixture);
+            const { sut, wallets, signTypeData, escrow, nonces } = fixture;
+
+            const wormholeChainId = wormholeDest;
+            const beneficiary = ethers.hexlify(ethers.randomBytes(32));
+
+            const beneficiarySignature = await signTypeData.updateBeneficiary(
+                wallets.kol,
+                escrow.id,
+                wormholeChainId,
+                beneficiary,
+                await nonces.escrow(escrow.id)
+            );
+
+            await expect(sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, wormholeChainId, beneficiary))
+                .to.emit(sut, "BeneficiaryUpdated")
+                .withArgs(escrow.id, wormholeChainId, beneficiary);
         });
     });
 
