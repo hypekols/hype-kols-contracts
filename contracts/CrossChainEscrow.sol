@@ -4,11 +4,12 @@ pragma solidity ^0.8.20;
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { IUSDC } from "./interfaces/IUSDC.sol";
 import { IWormholeRelayer } from "./interfaces/IWormholeRelayer.sol";
+
+import { Digests } from "./lib/Digests.sol";
 import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
 
 // TODO: Allow benificiary to change.
@@ -19,7 +20,7 @@ import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
  * @notice A cross chain escrow contract that allows for the creation of USDC escrows on one chain and the release on another chain.
  * Makes use of the wormhole protocol which in turn uses CCTP for cross chain communication.
  */
-contract CrossChainEscrow is Ownable, EIP712, Nonces {
+contract CrossChainEscrow is Digests, Ownable, EIP712 {
     error WormholeNotRegistered();
     error UnauthorizedSender();
     error InvalidResolution();
@@ -59,34 +60,6 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         return _domainSeparatorV4();
     }
 
-    /// @notice The typehash for the create escrow struct.
-    bytes32 private constant CREATE_TYPEHASH =
-        keccak256(
-            "CreateEscrow(bytes32 escrowReference,address creator,uint16 wormholeChainId,bytes32 beneficiary,uint256 amount,uint256 serviceFee,uint256 nonce)"
-        );
-
-    /// @notice The typehash for the increase escrow struct.
-    bytes32 private constant INCREASE_TYPEHASH =
-        keccak256("IncreaseEscrow(uint256 escrowId,uint256 amount,uint256 serviceFee,uint256 nonce)");
-
-    /// @notice The typehash for the release escrow struct.
-    bytes32 private constant RELEASE_TYPEHASH =
-        keccak256("ReleaseEscrow(uint256 escrowId,uint256 amount,uint256 nonce)");
-
-    /// @notice The typehash for the elected signer struct.
-    bytes32 private constant ELECTED_SIGNER_TYPEHASH =
-        keccak256("ElectedSigner(bytes32 nonEvmSigner,address electedSigner,uint256 nonce)");
-
-    /// @notice The typehash for the resolve amicably struct.
-    bytes32 private constant RESOLVE_AMICABLY_TYPEHASH = keccak256("ResolveAmicably(uint256 escrowId,uint256 amount)");
-
-    /// @notice The typehash for the start dispute struct.
-    bytes32 private constant START_DISPUTE_TYPEHASH = keccak256("StartDispute(uint256 escrowId,uint256 nonce)");
-
-    /// @notice The typehash for the resolve dispute struct.
-    bytes32 private constant RESOLVE_DISPUTE_TYPEHASH =
-        keccak256("ResolveDispute(uint256 escrowId,uint256 creatorAmount,uint256 beneficiaryAmount,uint256 nonce)");
-
     /// @notice The usdc address on this chain
     IUSDC public immutable USDC;
 
@@ -110,10 +83,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
     /// @notice The duration in seconds after which a dispute can be resolved by the platform.
     uint48 public platformResolutionTimeout;
 
-    /// @notice A mapping between the escrow id and escrow data.
     mapping(uint256 => Escrow) private _escrow;
-
-    /// @notice A mapping between the escrow id and the elected signer address for non evm support.
     mapping(bytes32 => address) private _electedSigners;
 
     // #######################################################################################
@@ -176,17 +146,13 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         onlySigner(
             _recoverSigner(
                 _platformSignature,
-                keccak256(
-                    abi.encode(
-                        CREATE_TYPEHASH,
-                        _escrowReference,
-                        _creator,
-                        _wormholeChainId,
-                        _beneficiary,
-                        _amounts.escrow,
-                        _amounts.serviceFee,
-                        _useNonce(msg.sender)
-                    )
+                _createEscrowDigest(
+                    _escrowReference,
+                    _creator,
+                    _wormholeChainId,
+                    _beneficiary,
+                    _amounts.escrow,
+                    _amounts.serviceFee
                 )
             )
         )
@@ -235,18 +201,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         external
         onlyExists(_escrowId)
         onlySigner(
-            _recoverSigner(
-                _platformSignature,
-                keccak256(
-                    abi.encode(
-                        INCREASE_TYPEHASH,
-                        _escrowId,
-                        _amounts.escrow,
-                        _amounts.serviceFee,
-                        _useNonce(msg.sender)
-                    )
-                )
-            )
+            _recoverSigner(_platformSignature, _increaseEscrowDigest(_escrowId, _amounts.escrow, _amounts.serviceFee))
         )
     {
         _escrow[_escrowId].amount += _amounts.escrow;
@@ -276,13 +231,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
     )
         external
         onlyExists(_escrowId)
-        onlyCreator(
-            _escrowId,
-            _recoverSigner(
-                _creatorSignature,
-                keccak256(abi.encode(RELEASE_TYPEHASH, _escrowId, _amount, _useNonce(msg.sender)))
-            )
-        )
+        onlyCreator(_escrowId, _recoverSigner(_creatorSignature, _releaseEscrowDigest(_escrowId, _amount)))
     {
         _releaseEscrow(_escrowId, _amount);
     }
@@ -295,15 +244,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         Signature calldata _platformSignature,
         bytes32 _nonEvmSigner,
         address _electedSigner
-    )
-        external
-        onlySigner(
-            _recoverSigner(
-                _platformSignature,
-                keccak256(abi.encode(ELECTED_SIGNER_TYPEHASH, _nonEvmSigner, _electedSigner, _useNonce(msg.sender)))
-            )
-        )
-    {
+    ) external onlySigner(_recoverSigner(_platformSignature, _setElectedSignerDigest(_nonEvmSigner, _electedSigner))) {
         _electedSigners[_nonEvmSigner] = _electedSigner;
         emit SignerElected(_nonEvmSigner, _electedSigner);
     }
@@ -325,17 +266,14 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
             _escrow[_escrowId].creator !=
             _recoverSigner(
                 _creatorSignature,
-                keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _creatorAmount))
+                _amicableResolutionDigest(_escrowId, _creatorAmount, _escrow[_escrowId].creator)
             )
         ) revert InvalidSignature();
 
-        address _beneficiary = _getBeneficiaryAddress(_escrow[_escrowId].beneficiary);
+        address beneficiary = _getBeneficiaryAddress(_escrow[_escrowId].beneficiary);
         if (
-            _beneficiary !=
-            _recoverSigner(
-                _beneficiarySignature,
-                keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _beneficiaryAmount))
-            )
+            beneficiary !=
+            _recoverSigner(_beneficiarySignature, _amicableResolutionDigest(_escrowId, _beneficiaryAmount, beneficiary))
         ) revert InvalidSignature();
 
         _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
@@ -347,16 +285,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
     function startDispute(
         Signature calldata _platformSignature,
         uint256 _escrowId
-    )
-        external
-        onlyExists(_escrowId)
-        onlySigner(
-            _recoverSigner(
-                _platformSignature,
-                keccak256(abi.encode(START_DISPUTE_TYPEHASH, _escrowId, _useNonce(msg.sender)))
-            )
-        )
-    {
+    ) external onlyExists(_escrowId) onlySigner(_recoverSigner(_platformSignature, _startDisputeDigest(_escrowId))) {
         if (_escrow[_escrowId].allowPlatformResolutionTimestamp != 0) revert AlreadyStarted();
 
         _escrow[_escrowId].allowPlatformResolutionTimestamp = uint48(block.timestamp) + platformResolutionTimeout;
@@ -378,18 +307,7 @@ contract CrossChainEscrow is Ownable, EIP712, Nonces {
         external
         onlyExists(_escrowId)
         onlySigner(
-            _recoverSigner(
-                _platformSignature,
-                keccak256(
-                    abi.encode(
-                        RESOLVE_DISPUTE_TYPEHASH,
-                        _escrowId,
-                        _creatorAmount,
-                        _beneficiaryAmount,
-                        _useNonce(msg.sender)
-                    )
-                )
-            )
+            _recoverSigner(_platformSignature, _resolveDisputeDigest(_escrowId, _creatorAmount, _beneficiaryAmount))
         )
     {
         if (
