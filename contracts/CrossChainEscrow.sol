@@ -46,7 +46,7 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
     event EscrowRefunded(uint256 indexed escrow_id, uint256 amount);
 
     event BeneficiaryUpdated(uint256 indexed escrow_id, uint16 wormhole_chain_id, bytes32 beneficiary);
-    event SignerElected(bytes32 indexed nonEvmSigner, address electedSigner);
+    event EvmAddressElected(bytes32 indexed nonEvmAddress, address electedAddress);
     event BridgeFeePaid(uint256 indexed escrow_id, uint256 amount);
 
     event DisputeStarted(uint256 indexed escrow_id, uint48 resolution_timestamp);
@@ -83,7 +83,7 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
     uint48 public platformResolutionTimeout;
 
     mapping(uint256 => Escrow) private _escrow;
-    mapping(bytes32 => address) private _electedSigners;
+    mapping(bytes32 => address) private _electedAddresses;
 
     // #######################################################################################
 
@@ -273,17 +273,20 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
         _releaseEscrow(_escrowId, _amount);
     }
 
-    /// @notice Elects a signer for a non evm supported chain.
+    /// @notice Elects an address for a non evm supported chain.
     /// @param _platformSignature The platform signature.
-    /// @param _nonEvmSigner The non evm signer address.
-    /// @param _electedSigner The elected signer address.
-    function setElectedSigner(
+    /// @param _nonEvmAddress The non EVM address.
+    /// @param _electedAddress The elected EVM address.
+    function setElectedEvmAddress(
         Signature calldata _platformSignature,
-        bytes32 _nonEvmSigner,
-        address _electedSigner
-    ) external onlySigner(_recoverSigner(_platformSignature, _setElectedSignerDigest(_nonEvmSigner, _electedSigner))) {
-        _electedSigners[_nonEvmSigner] = _electedSigner;
-        emit SignerElected(_nonEvmSigner, _electedSigner);
+        bytes32 _nonEvmAddress,
+        address _electedAddress
+    )
+        external
+        onlySigner(_recoverSigner(_platformSignature, _setElectedAddressDigest(_nonEvmAddress, _electedAddress)))
+    {
+        _electedAddresses[_nonEvmAddress] = _electedAddress;
+        emit EvmAddressElected(_nonEvmAddress, _electedAddress);
     }
 
     /// @notice Resolves a dispute amicably. Can be called by anyone but must satisfy two conditions. 1) Both the creator and beneficiary must sign the resolution. 2) The amounts must add up to the escrow amount.
@@ -357,9 +360,9 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
 
     // #######################################################################################
 
-    /// @notice Gets the elected signer for a non evm supported chain address.
-    function getElectedSigner(bytes32 _nonEvmSigner) external view returns (address) {
-        return _electedSigners[_nonEvmSigner];
+    /// @notice Gets the elected wallet for a non EVM supported chain address.
+    function getElectedAddress(bytes32 _nonEvmAddress) external view returns (address) {
+        return _electedAddresses[_nonEvmAddress];
     }
 
     /// @notice Gets the escrow data for a given escrow id.
@@ -459,9 +462,9 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
 
     function _getBeneficiaryAddress(bytes32 _beneficiary) private view returns (address) {
         return
-            _electedSigners[_beneficiary] == address(0)
+            _electedAddresses[_beneficiary] == address(0)
                 ? _bytes32ToAddress(_beneficiary)
-                : _electedSigners[_beneficiary];
+                : _electedAddresses[_beneficiary];
     }
 
     function _recoverSigner(Signature calldata _signature, bytes32 _digest) private view returns (address) {

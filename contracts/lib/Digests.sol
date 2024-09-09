@@ -16,8 +16,8 @@ abstract contract Digests {
     bytes32 private constant RELEASE_TYPEHASH =
         keccak256("ReleaseEscrow(uint256 escrowId,uint256 amount,uint256 nonce)");
 
-    bytes32 private constant ELECTED_SIGNER_TYPEHASH =
-        keccak256("ElectedSigner(bytes32 nonEvmSigner,address electedSigner,uint256 nonce)"); // TODO: rename to elected evm wallet
+    bytes32 private constant ELECT_ADDRESS_TYPEHASH =
+        keccak256("ElectEvmAddress(bytes32 nonEvmAddress,address electedAddress,uint256 nonce)");
 
     bytes32 private constant RESOLVE_AMICABLY_TYPEHASH =
         keccak256("ResolveAmicably(uint256 escrowId,uint256 amount,uint256 nonce)"); // TODO: Add deadline
@@ -96,10 +96,10 @@ abstract contract Digests {
         return keccak256(abi.encode(RELEASE_TYPEHASH, _escrowId, _amount, _useEscrowNonce(_escrowId)));
     }
 
-    function _setElectedSignerDigest(bytes32 _nonEvmSigner, address _electedSigner) internal returns (bytes32) {
+    function _setElectedAddressDigest(bytes32 _nonEvmSigner, address _electedSigner) internal returns (bytes32) {
         return
             keccak256(
-                abi.encode(ELECTED_SIGNER_TYPEHASH, _nonEvmSigner, _electedSigner, _useAddressNonce(_electedSigner))
+                abi.encode(ELECT_ADDRESS_TYPEHASH, _nonEvmSigner, _electedSigner, _useAddressNonce(_electedSigner))
             );
     }
 

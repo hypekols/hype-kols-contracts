@@ -99,10 +99,10 @@ describe("CrossChainEscrow", function () {
                     { name: "nonce", type: "uint256" },
                 ],
             },
-            electedSigner: {
-                ElectedSigner: [
-                    { name: "nonEvmSigner", type: "bytes32" },
-                    { name: "electedSigner", type: "address" },
+            electEvmAddress: {
+                ElectEvmAddress: [
+                    { name: "nonEvmAddress", type: "bytes32" },
+                    { name: "electedAddress", type: "address" },
                     { name: "nonce", type: "uint256" },
                 ],
             },
@@ -205,16 +205,16 @@ describe("CrossChainEscrow", function () {
             );
         }
 
-        async function signElectedSigner(
+        async function signElectEvmAddress(
             signer: HardhatEthersSigner,
-            nonEvmSigner: BytesLike,
-            electedSigner: string,
+            nonEvmAddress: BytesLike,
+            electedAddress: string,
             nonce: bigint
         ) {
             return Signature.from(
-                await signer.signTypedData(domains.crossChainEscrow, types.electedSigner, {
-                    nonEvmSigner,
-                    electedSigner,
+                await signer.signTypedData(domains.crossChainEscrow, types.electEvmAddress, {
+                    nonEvmAddress,
+                    electedAddress,
                     nonce,
                 })
             );
@@ -289,7 +289,7 @@ describe("CrossChainEscrow", function () {
                 increase: signIncreaseEscrow,
                 updateBeneficiary: signUpdateBeneficiary,
                 release: signReleaseEscrow,
-                electedSigner: signElectedSigner,
+                electEvmAddress: signElectEvmAddress,
                 amicable: signAmicableResolution,
                 startDispute: signStartDispute,
                 resolveDispute: signResolveDispute,
@@ -399,7 +399,24 @@ describe("CrossChainEscrow", function () {
         return fixture;
     }
 
-    // TODO: Elect signer helper
+    async function setElectedEvmAddress(
+        fixture: Fixture,
+        nonEvmAddress: BytesLike,
+        electedWallet: HardhatEthersSigner
+    ) {
+        const { sut, signTypeData, wallets, nonces } = fixture;
+
+        const platformSignature = await signTypeData.electEvmAddress(
+            wallets.platform,
+            nonEvmAddress,
+            electedWallet.address,
+            await nonces.address(electedWallet.address)
+        );
+
+        await sut.setElectedEvmAddress(platformSignature, nonEvmAddress, electedWallet.address);
+
+        return fixture;
+    }
 
     async function getPermit(fixture: Fixture, amount: bigint) {
         const { sut, wallets, signTypeData, nonces } = fixture;
@@ -1156,16 +1173,12 @@ describe("CrossChainEscrow", function () {
 
         it("Should set the beneficiary and wormhole chain id with an elected wallet", async function () {
             const fixture = await loadFixture(deployBridgedEscrowFixture);
-            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
-
-            const platformSignature = await signTypeData.electedSigner(
-                wallets.platform,
-                escrow.beneficiary,
-                wallets.kol.address,
-                await nonces.address(wallets.kol.address)
+            const { escrow } = fixture;
+            const { sut, wallets } = await setElectedEvmAddress(
+                fixture,
+                fixture.escrow.beneficiary,
+                fixture.wallets.kol
             );
-
-            await sut.setElectedSigner(platformSignature, escrow.beneficiary, wallets.kol.address);
 
             const wormholeChainId = wormholeDest;
             const beneficiary = ethers.hexlify(ethers.randomBytes(32));
@@ -1205,7 +1218,12 @@ describe("CrossChainEscrow", function () {
             );
 
             await expect(
-                sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id + 1n, escrow.wormholeChainId, escrow.beneficiary)
+                sut.relayedUpdateBeneficiary(
+                    beneficiarySignature,
+                    escrow.id + 1n,
+                    escrow.wormholeChainId,
+                    escrow.beneficiary
+                )
             ).to.be.revertedWithCustomError(sut, "EscrowNotFound");
         });
 
@@ -1222,7 +1240,12 @@ describe("CrossChainEscrow", function () {
             );
 
             await expect(
-                sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, escrow.wormholeChainId, escrow.beneficiary)
+                sut.relayedUpdateBeneficiary(
+                    beneficiarySignature,
+                    escrow.id,
+                    escrow.wormholeChainId,
+                    escrow.beneficiary
+                )
             ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
         });
 
@@ -1239,7 +1262,12 @@ describe("CrossChainEscrow", function () {
             );
 
             await expect(
-                sut.relayedUpdateBeneficiary(beneficiarySignature, escrow.id, escrow.wormholeChainId, escrow.beneficiary)
+                sut.relayedUpdateBeneficiary(
+                    beneficiarySignature,
+                    escrow.id,
+                    escrow.wormholeChainId,
+                    escrow.beneficiary
+                )
             ).to.be.revertedWithCustomError(sut, "InvalidAddress");
         });
 
@@ -1285,16 +1313,12 @@ describe("CrossChainEscrow", function () {
 
         it("Should set the beneficiary and wormhole chain id with an elected wallet", async function () {
             const fixture = await loadFixture(deployBridgedEscrowFixture);
-            const { sut, signTypeData, wallets, nonces, escrow } = fixture;
-
-            const platformSignature = await signTypeData.electedSigner(
-                wallets.platform,
-                escrow.beneficiary,
-                wallets.kol.address,
-                await nonces.address(wallets.kol.address)
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await setElectedEvmAddress(
+                fixture,
+                fixture.escrow.beneficiary,
+                fixture.wallets.kol
             );
-
-            await sut.setElectedSigner(platformSignature, escrow.beneficiary, wallets.kol.address);
 
             const wormholeChainId = wormholeDest;
             const beneficiary = ethers.hexlify(ethers.randomBytes(32));
@@ -1748,22 +1772,22 @@ describe("CrossChainEscrow", function () {
         });
     });
 
-    describe("setElectedSigner", function () {
-        const nonEvmSigner = ethers.hexlify(ethers.randomBytes(32));
+    describe("setElectedEvmAddress", function () {
+        const nonEvmAddress = ethers.hexlify(ethers.randomBytes(32));
 
         it("Should revert if the signature is invalid", async function () {
             const fixture = await loadFixture(deployFixture);
             const { sut, signTypeData, wallets, nonces } = fixture;
 
-            const platformSignature = await signTypeData.electedSigner(
+            const platformSignature = await signTypeData.electEvmAddress(
                 wallets.org, // invalid signer
-                nonEvmSigner,
+                nonEvmAddress,
                 wallets.kol.address,
                 await nonces.address(wallets.kol.address)
             );
 
             await expect(
-                sut.setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address)
+                sut.setElectedEvmAddress(platformSignature, nonEvmAddress, wallets.kol.address)
             ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
         });
 
@@ -1771,49 +1795,53 @@ describe("CrossChainEscrow", function () {
             const fixture = await loadFixture(deployFixture);
             const { sut, signTypeData, wallets, nonces } = fixture;
 
-            const platformSignature = await signTypeData.electedSigner(
+            const platformSignature = await signTypeData.electEvmAddress(
                 wallets.platform,
-                nonEvmSigner,
+                nonEvmAddress,
                 wallets.kol.address,
                 await nonces.address(wallets.kol.address)
             );
 
-            await sut.connect(wallets.relayer).setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address);
+            await sut
+                .connect(wallets.relayer)
+                .setElectedEvmAddress(platformSignature, nonEvmAddress, wallets.kol.address);
 
             await expect(
-                sut.connect(wallets.attacker).setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address)
+                sut
+                    .connect(wallets.attacker)
+                    .setElectedEvmAddress(platformSignature, nonEvmAddress, wallets.kol.address)
             ).to.be.revertedWithCustomError(sut, "UnauthorizedSender");
         });
 
-        it("Should set the elected signer", async function () {
+        it("Should set the elected evm address", async function () {
             const fixture = await loadFixture(deployFixture);
             const { sut, signTypeData, wallets, nonces } = fixture;
 
-            const platformSignature = await signTypeData.electedSigner(
+            const platformSignature = await signTypeData.electEvmAddress(
                 wallets.platform,
-                nonEvmSigner,
+                nonEvmAddress,
                 wallets.kol.address,
                 await nonces.address(wallets.kol.address)
             );
 
-            await sut.setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address);
-            expect(await sut.getElectedSigner(nonEvmSigner)).to.be.equal(wallets.kol.address);
+            await sut.setElectedEvmAddress(platformSignature, nonEvmAddress, wallets.kol.address);
+            expect(await sut.getElectedAddress(nonEvmAddress)).to.be.equal(wallets.kol.address);
         });
 
-        it("Should emit the SignerElected event", async function () {
+        it("Should emit the EvmAddressElected event", async function () {
             const fixture = await loadFixture(deployFixture);
             const { sut, signTypeData, wallets, nonces } = fixture;
 
-            const platformSignature = await signTypeData.electedSigner(
+            const platformSignature = await signTypeData.electEvmAddress(
                 wallets.platform,
-                nonEvmSigner,
+                nonEvmAddress,
                 wallets.kol.address,
                 await nonces.address(wallets.kol.address)
             );
 
-            await expect(sut.setElectedSigner(platformSignature, nonEvmSigner, wallets.kol.address))
-                .to.emit(sut, "SignerElected")
-                .withArgs(nonEvmSigner, wallets.kol.address);
+            await expect(sut.setElectedEvmAddress(platformSignature, nonEvmAddress, wallets.kol.address))
+                .to.emit(sut, "EvmAddressElected")
+                .withArgs(nonEvmAddress, wallets.kol.address);
         });
     });
 
@@ -1985,17 +2013,12 @@ describe("CrossChainEscrow", function () {
         });
 
         it("Should use the elected signer", async function () {
-            const { sut, wallets, signTypeData, escrow, nonces } = await loadFixture(deployBridgedEscrowFixture);
-
-            await sut.setElectedSigner(
-                await signTypeData.electedSigner(
-                    wallets.platform,
-                    escrow.beneficiary,
-                    wallets.kol.address,
-                    await nonces.address(wallets.kol.address)
-                ),
-                escrow.beneficiary,
-                wallets.kol.address
+            const fixture = await loadFixture(deployBridgedEscrowFixture);
+            const { escrow } = fixture;
+            const { sut, wallets, signTypeData, nonces } = await setElectedEvmAddress(
+                fixture,
+                fixture.escrow.beneficiary,
+                fixture.wallets.kol
             );
 
             const half = escrow.amount / 2n;
@@ -2269,16 +2292,7 @@ describe("CrossChainEscrow", function () {
                     this.beforeEach(async function () {
                         fixture = await loadFixture(deployBridgedEscrowFixture);
 
-                        await fixture.sut.setElectedSigner(
-                            await fixture.signTypeData.electedSigner(
-                                fixture.wallets.platform,
-                                fixture.escrow.beneficiary,
-                                fixture.wallets.kol.address,
-                                await fixture.nonces.address(fixture.wallets.kol.address)
-                            ),
-                            fixture.escrow.beneficiary,
-                            fixture.wallets.kol.address
-                        );
+                        await setElectedEvmAddress(fixture, fixture.escrow.beneficiary, fixture.wallets.kol);
 
                         await fixture.wormholeRelayer.mockRelayerFee(
                             wormholeDest,
@@ -2402,17 +2416,11 @@ describe("CrossChainEscrow", function () {
 
                 it("Should transfer the amount to wormhole", async function () {
                     const fixture = await loadFixture(deployBridgedEscrowFixture);
-                    const { sut, wormholeRelayer, usdc, signTypeData, wallets, escrow, nonces } = fixture;
-
-                    await sut.setElectedSigner(
-                        await signTypeData.electedSigner(
-                            wallets.platform,
-                            escrow.beneficiary,
-                            wallets.kol.address,
-                            await nonces.address(wallets.kol.address)
-                        ),
-                        escrow.beneficiary,
-                        wallets.kol.address
+                    const { escrow } = fixture;
+                    const { sut, wormholeRelayer, usdc, signTypeData, wallets, nonces } = await setElectedEvmAddress(
+                        fixture,
+                        fixture.escrow.beneficiary,
+                        fixture.wallets.kol
                     );
 
                     const creatorAmount = 0n;
@@ -2451,17 +2459,11 @@ describe("CrossChainEscrow", function () {
 
                 it("Should forward the call to wormhole", async function () {
                     const fixture = await loadFixture(deployBridgedEscrowFixture);
-                    const { sut, wormholeRelayer, usdc, signTypeData, wallets, escrow, nonces } = fixture;
-
-                    await sut.setElectedSigner(
-                        await signTypeData.electedSigner(
-                            wallets.platform,
-                            escrow.beneficiary,
-                            wallets.kol.address,
-                            await nonces.address(wallets.kol.address)
-                        ),
-                        escrow.beneficiary,
-                        wallets.kol.address
+                    const { escrow } = fixture;
+                    const { sut, wormholeRelayer, usdc, signTypeData, wallets, nonces } = await setElectedEvmAddress(
+                        fixture,
+                        fixture.escrow.beneficiary,
+                        fixture.wallets.kol
                     );
 
                     const creatorAmount = 0n;
@@ -2495,17 +2497,11 @@ describe("CrossChainEscrow", function () {
 
                 it("Should emit the EscrowReleased event", async function () {
                     const fixture = await loadFixture(deployBridgedEscrowFixture);
-                    const { sut, wormholeRelayer, signTypeData, wallets, escrow, nonces } = fixture;
-
-                    await sut.setElectedSigner(
-                        await signTypeData.electedSigner(
-                            wallets.platform,
-                            escrow.beneficiary,
-                            wallets.kol.address,
-                            await nonces.address(wallets.kol.address)
-                        ),
-                        escrow.beneficiary,
-                        wallets.kol.address
+                    const { escrow } = fixture;
+                    const { sut, wormholeRelayer, signTypeData, wallets, nonces } = await setElectedEvmAddress(
+                        fixture,
+                        fixture.escrow.beneficiary,
+                        fixture.wallets.kol
                     );
 
                     const messageSequence = 15;
@@ -2967,16 +2963,7 @@ describe("CrossChainEscrow", function () {
                     this.beforeEach(async function () {
                         fixture = await loadFixture(deployBridgedEscrowFixture);
 
-                        await fixture.sut.setElectedSigner(
-                            await fixture.signTypeData.electedSigner(
-                                fixture.wallets.platform,
-                                fixture.escrow.beneficiary,
-                                fixture.wallets.kol.address,
-                                await fixture.nonces.escrow(fixture.escrow.id)
-                            ),
-                            fixture.escrow.beneficiary,
-                            fixture.wallets.kol.address
-                        );
+                        await setElectedEvmAddress(fixture, fixture.escrow.beneficiary, fixture.wallets.kol);
 
                         await fixture.wormholeRelayer.mockRelayerFee(
                             wormholeDest,
@@ -3082,20 +3069,10 @@ describe("CrossChainEscrow", function () {
                 it("Should transfer the amount to wormhole", async function () {
                     const fixture = await loadFixture(deployBridgedEscrowFixture);
                     const { escrow } = fixture;
-                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
-                        fixture,
-                        escrow.id
-                    );
-
-                    await sut.setElectedSigner(
-                        await signTypeData.electedSigner(
-                            wallets.platform,
-                            escrow.beneficiary,
-                            wallets.kol.address,
-                            await nonces.address(wallets.kol.address)
-                        ),
-                        escrow.beneficiary,
-                        wallets.kol.address
+                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await setElectedEvmAddress(
+                        await startDispute(fixture, escrow.id),
+                        fixture.escrow.beneficiary,
+                        fixture.wallets.kol
                     );
 
                     const creatorAmount = 0n;
@@ -3126,20 +3103,10 @@ describe("CrossChainEscrow", function () {
                 it("Should forward the call to wormhole", async function () {
                     const fixture = await loadFixture(deployBridgedEscrowFixture);
                     const { escrow } = fixture;
-                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
-                        fixture,
-                        escrow.id
-                    );
-
-                    await sut.setElectedSigner(
-                        await signTypeData.electedSigner(
-                            wallets.platform,
-                            escrow.beneficiary,
-                            wallets.kol.address,
-                            await nonces.address(wallets.kol.address)
-                        ),
-                        escrow.beneficiary,
-                        wallets.kol.address
+                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await setElectedEvmAddress(
+                        await startDispute(fixture, escrow.id),
+                        fixture.escrow.beneficiary,
+                        fixture.wallets.kol
                     );
 
                     const creatorAmount = 0n;
@@ -3164,20 +3131,10 @@ describe("CrossChainEscrow", function () {
                 it("Should emit the EscrowReleased event", async function () {
                     const fixture = await loadFixture(deployBridgedEscrowFixture);
                     const { escrow } = fixture;
-                    const { sut, wormholeRelayer, wallets, signTypeData, nonces } = await startDispute(
-                        fixture,
-                        escrow.id
-                    );
-
-                    await sut.setElectedSigner(
-                        await signTypeData.electedSigner(
-                            wallets.platform,
-                            escrow.beneficiary,
-                            wallets.kol.address,
-                            await nonces.address(wallets.kol.address)
-                        ),
-                        escrow.beneficiary,
-                        wallets.kol.address
+                    const { sut, usdc, wormholeRelayer, wallets, signTypeData, nonces } = await setElectedEvmAddress(
+                        await startDispute(fixture, escrow.id),
+                        fixture.escrow.beneficiary,
+                        fixture.wallets.kol
                     );
 
                     const messageSequence = 15;
