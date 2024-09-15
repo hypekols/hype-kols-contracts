@@ -9,13 +9,19 @@ struct Escrow {
     bytes32 beneficiary;
 }
 
-struct Amounts {
-    uint256 escrow;
-    uint256 serviceFee;
-}
-
 struct Signature {
     bytes32 r;
     bytes32 s;
     uint8 v;
+    uint48 deadline;
+}
+
+struct RelayRequest {
+    Signature signature;
+    bytes data;
+}
+
+struct Permit {
+    bytes signature;
+    uint256 deadline;
 }

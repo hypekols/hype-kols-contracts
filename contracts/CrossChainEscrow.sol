@@ -9,8 +9,8 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { IUSDC } from "./interfaces/IUSDC.sol";
 import { IWormholeRelayer } from "./interfaces/IWormholeRelayer.sol";
 
-import { Digests } from "./lib/Digests.sol";
-import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
+import { Relay } from "./lib/Relay.sol";
+import { Escrow, Signature, Permit } from "./lib/Structs.sol";
 
 /**
  * @title CrossChainEscrow
@@ -18,8 +18,7 @@ import { Escrow, Amounts, Signature } from "./lib/Structs.sol";
  * @notice A cross chain escrow contract that allows for the creation of USDC escrows on one chain and the release on another chain.
  * Makes use of the wormhole protocol which in turn uses CCTP for cross chain communication.
  */
-contract CrossChainEscrow is Digests, Ownable, EIP712 {
-    error ResolutionDeadlineExceeded();
+contract CrossChainEscrow is Relay {
     error WormholeNotRegistered();
     error UnauthorizedSender();
     error InvalidResolution();
@@ -37,23 +36,28 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
         address indexed creator,
         uint16 wormhole_chain_id,
         bytes32 beneficiary,
-        uint256 amount,
-        uint256 serviceFee
+        uint256 amount
     );
 
-    event EscrowIncreased(uint256 indexed escrow_id, uint256 amount, uint256 serviceFee);
-
+    event EscrowIncreased(uint256 indexed escrow_id, uint256 amount);
     event EscrowReleased(uint256 indexed escrow_id, uint256 amount, uint64 wormholeMessageSequence);
-    event EscrowRefunded(uint256 indexed escrow_id, uint256 amount);
 
     event BeneficiaryUpdated(uint256 indexed escrow_id, uint16 wormhole_chain_id, bytes32 beneficiary);
-    event EvmAddressElected(bytes32 indexed nonEvmAddress, address electedAddress);
     event BridgeFeePaid(uint256 indexed escrow_id, uint256 amount);
 
     event DisputeStarted(uint256 indexed escrow_id, uint48 resolution_timestamp);
     event DisputeResolved(uint256 indexed escrow_id, uint256 creatorAmount, uint256 beneficiaryAmount);
 
+    event EvmAddressElected(bytes32 indexed nonEvmAddress, address electedAddress);
+
     // #######################################################################################
+
+    // Service Charge
+    uint256 private constant DENOMINATOR = 10000;
+    uint256 private constant DEFAULT_NUMERATOR = 1000; // 10%
+
+    bytes32 private constant RESOLVE_AMICABLY_TYPEHASH =
+        keccak256("ResolveAmicably(uint256 escrowId,uint256 amount,uint48 deadline)");
 
     /// @notice The domain separator for the contract.
     function DOMAIN_SEPARATOR() external view virtual returns (bytes32) {
@@ -84,6 +88,7 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
     uint48 public platformResolutionTimeout;
 
     mapping(uint256 => Escrow) private _escrow;
+    mapping(address => uint256) private _feeOverride;
     mapping(bytes32 => address) private _electedAddresses;
 
     // #######################################################################################
@@ -106,18 +111,18 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
 
     // #######################################################################################
 
-    modifier onlySigner(address _sender) {
-        if (platformSigner != _sender) revert UnauthorizedSender();
+    modifier onlyPlatform() {
+        if (platformSigner != _msgSender()) revert UnauthorizedSender();
         _;
     }
 
-    modifier onlyCreator(uint256 _escrowId, address _sender) {
-        if (_escrow[_escrowId].creator != _sender) revert UnauthorizedSender();
+    modifier onlyCreator(uint256 _escrowId) {
+        if (_escrow[_escrowId].creator != _msgSender()) revert UnauthorizedSender();
         _;
     }
 
-    modifier onlyBeneficiary(uint256 _escrowId, address _sender) {
-        if (_getBeneficiaryAddress(_escrow[_escrowId].beneficiary) != _sender) revert UnauthorizedSender();
+    modifier onlyBeneficiary(uint256 _escrowId) {
+        if (_getBeneficiaryAddress(_escrow[_escrowId].beneficiary) != _msgSender()) revert UnauthorizedSender();
         _;
     }
 
@@ -128,91 +133,54 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
 
     // #######################################################################################
 
-    /// @notice Creates a new escrow. Can only be called with platform permission. Makes use of USDC's Permit for single call approve+transfer.
-    /// @param _platformSignature The platform signature.
+    /// @notice Creates a new escrow. Makes use of USDC's Permit for single call approve+transfer.
     /// @param _escrowReference The escrow reference to link to the platform db.
-    /// @param _creator The creator of the escrow.
     /// @param _wormholeChainId The wormhole chain id.
     /// @param _beneficiary The beneficiary of the escrow.
-    /// @param _amounts The escrow and service fee amounts.
-    /// @param _signature The USDC permit signature.
-    /// @param _deadline The USDC permit deadline.
+    /// @param _amount The escrow amount.
+    /// @param _permit The USDC permit.
     function createEscrow(
-        Signature calldata _platformSignature,
         bytes32 _escrowReference,
-        address _creator,
         uint16 _wormholeChainId,
         bytes32 _beneficiary,
-        Amounts calldata _amounts,
-        bytes calldata _signature,
-        uint256 _deadline
-    )
-        external
-        onlySigner(
-            _recoverSigner(
-                _platformSignature,
-                _createEscrowDigest(
-                    _escrowReference,
-                    _creator,
-                    _wormholeChainId,
-                    _beneficiary,
-                    _amounts.escrow,
-                    _amounts.serviceFee
-                )
-            )
-        )
-    {
+        uint256 _amount,
+        Permit calldata _permit
+    ) external {
         if (_wormholeChainId != WORMHOLE_CHAIN_ID && WORMHOLE.getRegisteredContract(_wormholeChainId) == bytes32(0))
             revert WormholeNotRegistered();
 
+        address creator = _msgSender();
+
         _escrow[nextEscrowId] = Escrow({
-            amount: _amounts.escrow,
-            creator: _creator,
+            amount: _amount,
+            creator: creator,
             allowPlatformResolutionTimestamp: 0,
             wormholeChainId: _wormholeChainId,
             beneficiary: _beneficiary
         });
 
-        _custodyUSDC(_amounts, _signature, _creator, _deadline);
+        _custodyUSDC(_permit, creator, _amount);
 
-        emit EscrowCreated(
-            nextEscrowId,
-            _escrowReference,
-            _creator,
-            _wormholeChainId,
-            _beneficiary,
-            _amounts.escrow,
-            _amounts.serviceFee
-        );
+        emit EscrowCreated(nextEscrowId, _escrowReference, creator, _wormholeChainId, _beneficiary, _amount);
 
         unchecked {
             nextEscrowId++;
         }
     }
 
-    /// @notice Increases an existing escrow. Can only be called with platform permission. Makes use of USDC's Permit for single call approve+transfer.
-    /// @param _platformSignature The platform signature.
+    /// @notice Increases an existing escrow. Makes use of USDC's Permit for single call approve+transfer.
     /// @param _escrowId The escrow id.
-    /// @param _amounts The escrow and service fee amounts.
-    /// @param _signature The USDC permit signature.
-    /// @param _deadline The USDC permit deadline.
+    /// @param _amount The escrow amount.
+    /// @param _permit The USDC permit.
     function increaseEscrow(
-        Signature calldata _platformSignature,
         uint256 _escrowId,
-        Amounts calldata _amounts,
-        bytes calldata _signature,
-        uint256 _deadline
-    )
-        external
-        onlyExists(_escrowId)
-        onlySigner(
-            _recoverSigner(_platformSignature, _increaseEscrowDigest(_escrowId, _amounts.escrow, _amounts.serviceFee))
-        )
-    {
-        _escrow[_escrowId].amount += _amounts.escrow;
-        _custodyUSDC(_amounts, _signature, _escrow[_escrowId].creator, _deadline);
+        uint256 _amount,
+        Permit calldata _permit
+    ) external onlyExists(_escrowId) {
+        _escrow[_escrowId].amount += _amount;
+        _custodyUSDC(_permit, _msgSender(), _amount);
 
-        emit EscrowIncreased(_escrowId, _amounts.escrow, _amounts.serviceFee);
+        emit EscrowIncreased(_escrowId, _amount);
     }
 
     /// @notice Updates the beneficiary of an existing escrow. Can only be called by the beneficiary.
@@ -223,116 +191,61 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
         uint256 _escrowId,
         uint16 _wormholeChainId,
         bytes32 _beneficiary
-    ) external onlyExists(_escrowId) onlyBeneficiary(_escrowId, msg.sender) {
-        _updateBeneficiary(_escrowId, _wormholeChainId, _beneficiary);
-    }
+    ) external onlyExists(_escrowId) onlyBeneficiary(_escrowId) {
+        if (_wormholeChainId != WORMHOLE_CHAIN_ID && WORMHOLE.getRegisteredContract(_wormholeChainId) == bytes32(0))
+            revert WormholeNotRegistered();
 
-    /// @notice Relays the update of the beneficiary of an existing escrow. Can only be called with beneficiary permission.
-    /// @param _beneficiarySignature The beneficiary signature.
-    /// @param _escrowId The escrow id.
-    /// @param _wormholeChainId The wormhole chain id.
-    /// @param _beneficiary The new beneficiary.
-    function relayedUpdateBeneficiary(
-        Signature calldata _beneficiarySignature,
-        uint256 _escrowId,
-        uint16 _wormholeChainId,
-        bytes32 _beneficiary
-    )
-        external
-        onlyExists(_escrowId)
-        onlyBeneficiary(
-            _escrowId,
-            _recoverSigner(_beneficiarySignature, _updateBeneficiaryDigest(_escrowId, _wormholeChainId, _beneficiary))
-        )
-    {
-        _updateBeneficiary(_escrowId, _wormholeChainId, _beneficiary);
+        _escrow[_escrowId].wormholeChainId = _wormholeChainId;
+        _escrow[_escrowId].beneficiary = _beneficiary;
+
+        emit BeneficiaryUpdated(_escrowId, _wormholeChainId, _beneficiary);
     }
 
     /// @notice Releases an existing escrow. Can only be called by the creator.
     /// @param _escrowId The escrow id.
     /// @param _amount The amount to release.
-    function releaseEscrow(
-        uint256 _escrowId,
-        uint256 _amount
-    ) external onlyExists(_escrowId) onlyCreator(_escrowId, msg.sender) {
-        _releaseEscrow(_escrowId, _amount);
-    }
-
-    /// @notice Relays the release of an existing escrow. Can only be called with creator permission.
-    /// @param _creatorSignature The creator signature.
-    /// @param _escrowId The escrow id.
-    /// @param _amount The amount to release.
-    function relayedReleaseEscrow(
-        Signature calldata _creatorSignature,
-        uint256 _escrowId,
-        uint256 _amount
-    )
-        external
-        onlyExists(_escrowId)
-        onlyCreator(_escrowId, _recoverSigner(_creatorSignature, _releaseEscrowDigest(_escrowId, _amount)))
-    {
-        _releaseEscrow(_escrowId, _amount);
-    }
-
-    /// @notice Elects an address for a non evm supported chain.
-    /// @param _platformSignature The platform signature.
-    /// @param _nonEvmAddress The non EVM address.
-    /// @param _electedAddress The elected EVM address.
-    function setElectedEvmAddress(
-        Signature calldata _platformSignature,
-        bytes32 _nonEvmAddress,
-        address _electedAddress
-    )
-        external
-        onlySigner(_recoverSigner(_platformSignature, _setElectedAddressDigest(_nonEvmAddress, _electedAddress)))
-    {
-        _electedAddresses[_nonEvmAddress] = _electedAddress;
-        emit EvmAddressElected(_nonEvmAddress, _electedAddress);
+    function releaseEscrow(uint256 _escrowId, uint256 _amount) external onlyExists(_escrowId) onlyCreator(_escrowId) {
+        _escrow[_escrowId].amount -= _amount;
+        _transferToBeneficiary(_escrowId, _amount);
     }
 
     /// @notice Resolves a dispute amicably. Can be called by anyone but must satisfy two conditions. 1) Both the creator and beneficiary must sign the resolution. 2) The amounts must add up to the escrow amount.
+    /// @param _escrowId The escrow id.
     /// @param _creatorSignature The creator signature.
     /// @param _beneficiarySignature The beneficiary signature.
-    /// @param _escrowId The escrow id.
     /// @param _creatorAmount The creator amount.
-    /// @param _creatorDeadline The creator deadline.
     /// @param _beneficiaryAmount The beneficiary amount.
-    /// @param _beneficiaryDeadline The beneficiary deadline.
     function amicableResolution(
+        uint256 _escrowId,
         Signature calldata _creatorSignature,
         Signature calldata _beneficiarySignature,
-        uint256 _escrowId,
         uint256 _creatorAmount,
-        uint256 _creatorDeadline,
-        uint256 _beneficiaryAmount,
-        uint256 _beneficiaryDeadline
+        uint256 _beneficiaryAmount
     ) external onlyExists(_escrowId) {
         if (
             _escrow[_escrowId].creator !=
-            _recoverSigner(_creatorSignature, _amicableResolutionDigest(_escrowId, _creatorAmount, _creatorDeadline))
+            _recoverSigner(
+                _creatorSignature,
+                keccak256(abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _creatorAmount, _creatorSignature.deadline))
+            )
         ) revert InvalidSignature();
 
         if (
             _getBeneficiaryAddress(_escrow[_escrowId].beneficiary) !=
             _recoverSigner(
                 _beneficiarySignature,
-                _amicableResolutionDigest(_escrowId, _beneficiaryAmount, _beneficiaryDeadline)
+                keccak256(
+                    abi.encode(RESOLVE_AMICABLY_TYPEHASH, _escrowId, _beneficiaryAmount, _beneficiarySignature.deadline)
+                )
             )
         ) revert InvalidSignature();
-
-        if (block.timestamp > _creatorDeadline || block.timestamp > _beneficiaryDeadline)
-            revert ResolutionDeadlineExceeded();
 
         _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
     }
 
     /// @notice Starts a dispute. Can only be called by the platform.
-    /// @param _platformSignature The platform signature.
     /// @param _escrowId The escrow id.
-    function startDispute(
-        Signature calldata _platformSignature,
-        uint256 _escrowId
-    ) external onlyExists(_escrowId) onlySigner(_recoverSigner(_platformSignature, _startDisputeDigest(_escrowId))) {
+    function startDispute(uint256 _escrowId) external onlyExists(_escrowId) onlyPlatform {
         if (_escrow[_escrowId].allowPlatformResolutionTimestamp != 0) revert AlreadyStarted();
 
         _escrow[_escrowId].allowPlatformResolutionTimestamp = uint48(block.timestamp) + platformResolutionTimeout;
@@ -341,28 +254,35 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
     }
 
     /// @notice Resolves a dispute. Can only be called by the platform. Note, the platform can only resolve a dispute after the platformResolutionTimeout has passed, and they must account for the entire amount. In future this should be replaced by a dao vote.
-    /// @param _platformSignature The platform signature.
     /// @param _escrowId The escrow id.
     /// @param _creatorAmount The creator amount.
     /// @param _beneficiaryAmount The beneficiary amount.
     function resolveDispute(
-        Signature calldata _platformSignature,
         uint256 _escrowId,
         uint256 _creatorAmount,
         uint256 _beneficiaryAmount
-    )
-        external
-        onlyExists(_escrowId)
-        onlySigner(
-            _recoverSigner(_platformSignature, _resolveDisputeDigest(_escrowId, _creatorAmount, _beneficiaryAmount))
-        )
-    {
+    ) external onlyExists(_escrowId) onlyPlatform {
         if (
             _escrow[_escrowId].allowPlatformResolutionTimestamp == 0 ||
             _escrow[_escrowId].allowPlatformResolutionTimestamp > block.timestamp
         ) revert CannotResolveYet();
 
         _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
+    }
+
+    /// @notice Elects an address for a non evm supported chain.
+    /// @param _nonEvmAddress The non EVM address.
+    /// @param _electedAddress The elected EVM address.
+    function setElectedEvmAddress(bytes32 _nonEvmAddress, address _electedAddress) external onlyPlatform {
+        _electedAddresses[_nonEvmAddress] = _electedAddress;
+        emit EvmAddressElected(_nonEvmAddress, _electedAddress);
+    }
+
+    /// @notice Overrides the service charge for a user.
+    /// @param _user The user.
+    /// @param _numerator The numerator.
+    function setServiceChargeOverride(address _user, uint256 _numerator) external onlyPlatform {
+        _feeOverride[_user] = _numerator;
     }
 
     // #######################################################################################
@@ -375,6 +295,11 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
     /// @notice Gets the escrow data for a given escrow id.
     function getEscrow(uint256 _escrowId) external view returns (Escrow memory) {
         return _escrow[_escrowId];
+    }
+
+    /// @notice Gets the service charge for a given user and amount.
+    function getServiceCharge(address _user, uint256 _amount) external view returns (uint256) {
+        return _serviceCharge(_user, _amount);
     }
 
     // #######################################################################################
@@ -396,17 +321,12 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
 
     // #######################################################################################
 
-    function _custodyUSDC(
-        Amounts calldata _amounts,
-        bytes calldata _signature,
-        address _from,
-        uint256 _deadline
-    ) private {
-        uint256 _amount = _amounts.escrow + _amounts.serviceFee;
+    function _custodyUSDC(Permit calldata _permit, address _from, uint256 _amount) private {
+        uint256 serviceCharge = _serviceCharge(_from, _amount);
 
-        USDC.permit(_from, address(this), _amount, _deadline, _signature);
-        SafeERC20.safeTransferFrom(USDC, _from, address(this), _amounts.escrow);
-        SafeERC20.safeTransferFrom(USDC, _from, treasury, _amounts.serviceFee);
+        USDC.permit(_from, address(this), _amount + serviceCharge, _permit.deadline, _permit.signature);
+        SafeERC20.safeTransferFrom(USDC, _from, address(this), _amount);
+        SafeERC20.safeTransferFrom(USDC, _from, treasury, serviceCharge);
     }
 
     function _resolveDispute(uint256 _escrowId, uint256 _creatorAmount, uint256 _beneficiaryAmount) private {
@@ -414,21 +334,10 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
 
         _escrow[_escrowId].amount = 0;
 
-        if (_creatorAmount > 0) _transferToCreator(_escrowId, _creatorAmount);
+        if (_creatorAmount > 0) SafeERC20.safeTransfer(USDC, _escrow[_escrowId].creator, _creatorAmount);
         if (_beneficiaryAmount > 0) _transferToBeneficiary(_escrowId, _beneficiaryAmount);
 
         emit DisputeResolved(_escrowId, _creatorAmount, _beneficiaryAmount);
-    }
-
-    function _releaseEscrow(uint256 _escrowId, uint256 _amount) private {
-        _escrow[_escrowId].amount -= _amount;
-        _transferToBeneficiary(_escrowId, _amount);
-    }
-
-    function _transferToCreator(uint256 _escrowId, uint256 _amount) private {
-        SafeERC20.safeTransfer(USDC, _escrow[_escrowId].creator, _amount);
-
-        emit EscrowRefunded(_escrowId, _amount);
     }
 
     function _transferToBeneficiary(uint256 _escrowId, uint256 _amount) private {
@@ -457,25 +366,11 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
         emit EscrowReleased(_escrowId, _amount, messageSequence);
     }
 
-    function _updateBeneficiary(uint256 _escrowId, uint16 _wormholeChainId, bytes32 _beneficiary) private {
-        if (_wormholeChainId != WORMHOLE_CHAIN_ID && WORMHOLE.getRegisteredContract(_wormholeChainId) == bytes32(0))
-            revert WormholeNotRegistered();
-
-        _escrow[_escrowId].wormholeChainId = _wormholeChainId;
-        _escrow[_escrowId].beneficiary = _beneficiary;
-
-        emit BeneficiaryUpdated(_escrowId, _wormholeChainId, _beneficiary);
-    }
-
     function _getBeneficiaryAddress(bytes32 _beneficiary) private view returns (address) {
         return
             _electedAddresses[_beneficiary] == address(0)
                 ? _bytes32ToAddress(_beneficiary)
                 : _electedAddresses[_beneficiary];
-    }
-
-    function _recoverSigner(Signature calldata _signature, bytes32 _digest) private view returns (address) {
-        return ECDSA.recover(_hashTypedDataV4(_digest), _signature.v, _signature.r, _signature.s);
     }
 
     function _bytes32ToAddress(bytes32 _input) private pure returns (address) {
@@ -484,5 +379,9 @@ contract CrossChainEscrow is Digests, Ownable, EIP712 {
         }
 
         return address(uint160(uint256(_input)));
+    }
+
+    function _serviceCharge(address _user, uint256 _amount) private view returns (uint256) {
+        return ((_feeOverride[_user] > 0 ? _feeOverride[_user] : DEFAULT_NUMERATOR) * _amount) / DENOMINATOR;
     }
 }
