@@ -388,7 +388,7 @@ describe("CrossChainEscrow", function () {
         const callerAction: Action = async (fixture, wormholeChainId, beneficiary, amount, permit) => {
             const { sut, wallets } = fixture;
 
-            await sut.connect(wallets.org).createEscrow(escrowReference, wormholeChainId, beneficiary, amount, permit);
+            return sut.connect(wallets.org).createEscrow(escrowReference, wormholeChainId, beneficiary, amount, permit);
         };
 
         const signerAction: Action = async (fixture, wormholeChainId, beneficiary, amount, permit) => {
@@ -396,7 +396,7 @@ describe("CrossChainEscrow", function () {
 
             const { sut, wallets, sign } = fixture;
 
-            await sut
+            return sut
                 .connect(wallets.relayer)
                 .callAsSigner(
                     await sign.relayRequest(
@@ -438,249 +438,217 @@ describe("CrossChainEscrow", function () {
         });
 
         it("Should revert if the permit has an invalid signer", async function () {
-            const fixture = await loadFixture(deployFixture);
-            const { sut, usdc, sign, wallets, nonces } = fixture;
+            async function testWith(action: Action) {
+                const fixture = await loadFixture(deployFixture);
+                const { sut, wallets, sign, usdc, nonces } = fixture;
 
-            const creator = wallets.org.address;
-            const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
+                const serviceFee = await sut.getServiceCharge(wallets.org.address, amount);
 
-            const deadline = BigInt(await time.latest()) + 60n;
-            const permit = await sign.permit(
-                wallets.platform, // invalid signer
-                wallets.org.address,
-                sut.target.toString(),
-                amount,
-                await nonces.permit(wallets.org.address),
-                deadline
-            );
-
-            const platformSignature = await sign.create(
-                wallets.platform,
-                escrowReference,
-                creator,
-                wormholeChainId,
-                beneficiary,
-                amount,
-                serviceFee,
-                await nonces.address(creator)
-            );
-
-            const amountsStruct = {
-                escrow: amount,
-                serviceFee,
-            };
-
-            await expect(
-                sut.createEscrow(
-                    platformSignature,
-                    escrowReference,
-                    creator,
-                    wormholeChainId,
-                    beneficiary,
-                    amountsStruct,
-                    permit,
+                const deadline = BigInt(await time.latest()) + 60n;
+                const signature = await sign.permit(
+                    wallets.platform, // invalid signer
+                    wallets.org.address,
+                    sut.target.toString(),
+                    amount + serviceFee,
+                    await nonces.permit(wallets.org.address),
                     deadline
-                )
-            ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+                );
+
+                await expect(
+                    action(
+                        fixture,
+                        wormholeSource,
+                        ethers.zeroPadValue(fixture.wallets.kol.address, 32),
+                        amount,
+                        {
+                            signature,
+                            deadline,
+                        }
+                    )
+                ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+            }
+
+            await testWith(callerAction);
+            await testWith(signerAction);
         });
 
         it("Should revert if the permit has an invalid amount", async function () {
-            const fixture = await loadFixture(deployFixture);
-            const { sut, usdc, sign, wallets, nonces } = fixture;
+            async function testWith(action: Action) {
+                const fixture = await loadFixture(deployFixture);
+                const { usdc } = fixture;
 
-            const creator = wallets.org.address;
-            const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
-            const { permit, deadline } = await getPermit(fixture, amount); // missing service fee
+                const permit = await getPermit(fixture, amount); // missing service fee
 
-            const platformSignature = await sign.create(
-                wallets.platform,
-                escrowReference,
-                creator,
-                wormholeChainId,
-                beneficiary,
-                amount,
-                serviceFee,
-                await nonces.address(creator)
-            );
+                await expect(
+                    action(
+                        fixture,
+                        wormholeSource,
+                        ethers.zeroPadValue(fixture.wallets.kol.address, 32),
+                        amount,
+                        permit
+                    )
+                ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+            }
 
-            const amountsStruct = {
-                escrow: amount,
-                serviceFee,
-            };
-
-            await expect(
-                sut.createEscrow(
-                    platformSignature,
-                    escrowReference,
-                    creator,
-                    wormholeChainId,
-                    beneficiary,
-                    amountsStruct,
-                    permit,
-                    deadline
-                )
-            ).to.be.revertedWithCustomError(usdc, "ERC2612InvalidSigner");
+            await testWith(callerAction);
+            await testWith(signerAction);
         });
 
         it("Should create a direct escrow", async function () {
-            const { sut, escrow } = await loadFixture(deployDirectEscrowFixture);
+            async function testWith(action: Action) {
+                const fixture = await loadFixture(deployFixture);
+                const {sut,wallets} = fixture;
 
-            const escrowData = await sut.getEscrow(escrow.id);
+                const serviceFee = await sut.getServiceCharge(wallets.org.address, amount);
 
-            expect(escrowData.wormholeChainId).to.be.equal(wormholeSource);
+                const wormholeChainId = wormholeSource;
+                const beneficiary = ethers.zeroPadValue(wallets.kol.address, 32);
 
-            expect(escrowData.amount).to.be.equal(escrow.amount);
-            expect(escrowData.creator).to.be.equal(escrow.creator);
-            expect(escrowData.allowPlatformResolutionTimestamp).to.be.equal(0);
-            expect(escrowData.beneficiary).to.be.equal(escrow.beneficiary);
+                const nextEscrowId = await sut.nextEscrowId();
+
+                await action(
+                    fixture,
+                    wormholeChainId,
+                    beneficiary,
+                    amount,
+                    await getPermit(fixture, amount + serviceFee)
+                );
+
+                const escrowData = await sut.getEscrow(nextEscrowId);
+
+                expect(escrowData.amount).to.be.equal(amount);
+                expect(escrowData.creator).to.be.equal(wallets.org.address);
+                expect(escrowData.allowPlatformResolutionTimestamp).to.be.equal(0);
+                expect(escrowData.wormholeChainId).to.be.equal(wormholeChainId);
+                expect(escrowData.beneficiary).to.be.equal(beneficiary);
+            }
+
+            await testWith(callerAction);
+            await testWith(signerAction);
         });
 
         it("Should create a bridged escrow", async function () {
-            const { sut, escrow } = await loadFixture(deployBridgedEscrowFixture);
+            async function testWith(action: Action) {
+                const fixture = await loadFixture(deployFixture);
+                const {sut,wallets} = fixture;
 
-            const escrowData = await sut.getEscrow(escrow.id);
+                const serviceFee = await sut.getServiceCharge(wallets.org.address, amount);
 
-            expect(escrowData.wormholeChainId).to.be.equal(wormholeDest);
+                const wormholeChainId = wormholeDest;
+                const beneficiary = ethers.hexlify(ethers.randomBytes(32));
 
-            expect(escrowData.amount).to.be.equal(escrow.amount);
-            expect(escrowData.creator).to.be.equal(escrow.creator);
-            expect(escrowData.allowPlatformResolutionTimestamp).to.be.equal(0);
-            expect(escrowData.beneficiary).to.equal(ethers.hexlify(escrow.beneficiary));
+                const nextEscrowId = await sut.nextEscrowId();
+
+                await action(
+                    fixture,
+                    wormholeChainId,
+                    beneficiary,
+                    amount,
+                    await getPermit(fixture, amount + serviceFee)
+                );
+
+                const escrowData = await sut.getEscrow(nextEscrowId);
+
+                expect(escrowData.amount).to.be.equal(amount);
+                expect(escrowData.creator).to.be.equal(wallets.org.address);
+                expect(escrowData.allowPlatformResolutionTimestamp).to.be.equal(0);
+                expect(escrowData.wormholeChainId).to.be.equal(wormholeChainId);
+                expect(escrowData.beneficiary).to.be.equal(beneficiary);
+            }
+
+            await testWith(callerAction);
+            await testWith(signerAction);
         });
 
         it("Should custody the USDC", async function () {
-            const fixture = await loadFixture(deployFixture);
-            const { sut, usdc, sign, wallets, nonces } = fixture;
+            async function testWith(action: Action) {
+                const fixture = await loadFixture(deployFixture);
+                const {sut,wallets,usdc} = fixture;
 
-            const creator = wallets.org.address;
-            const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
-            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+                const serviceFee = await sut.getServiceCharge(wallets.org.address, amount);
 
-            const platformSignature = await sign.create(
-                wallets.platform,
-                escrowReference,
-                creator,
-                wormholeChainId,
-                beneficiary,
-                amount,
-                serviceFee,
-                await nonces.address(creator)
-            );
+                const wormholeChainId = wormholeSource;
+                const beneficiary = ethers.zeroPadValue(wallets.kol.address, 32);
 
-            const amountsStruct = {
-                escrow: amount,
-                serviceFee,
-            };
+                const sutBalanceBefore = await usdc.balanceOf(sut.target);
+                const orgBalanceBefore = await usdc.balanceOf(wallets.org.address);
+                const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
 
-            const sutBalanceBefore = await usdc.balanceOf(sut.target);
-            const orgBalanceBefore = await usdc.balanceOf(wallets.org.address);
-            const treasuryBalanceBefore = await usdc.balanceOf(wallets.treasury.address);
+                await action(
+                    fixture,
+                    wormholeChainId,
+                    beneficiary,
+                    amount,
+                    await getPermit(fixture, amount + serviceFee)
+                );
 
-            await sut.createEscrow(
-                platformSignature,
-                escrowReference,
-                creator,
-                wormholeChainId,
-                beneficiary,
-                amountsStruct,
-                permit,
-                deadline
-            );
+                const sutBalanceAfter = await usdc.balanceOf(sut.target);
+                const orgBalanceAfter = await usdc.balanceOf(wallets.org.address);
+                const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
 
-            const sutBalanceAfter = await usdc.balanceOf(sut.target);
-            const orgBalanceAfter = await usdc.balanceOf(wallets.org.address);
-            const treasuryBalanceAfter = await usdc.balanceOf(wallets.treasury.address);
+                expect(sutBalanceAfter).to.be.equal(sutBalanceBefore + amount);
+                expect(orgBalanceAfter).to.be.equal(orgBalanceBefore - amount - serviceFee);
+                expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore + serviceFee);
+            }
 
-            expect(sutBalanceAfter).to.be.equal(sutBalanceBefore + amount);
-            expect(orgBalanceAfter).to.be.equal(orgBalanceBefore - amount - serviceFee);
-            expect(treasuryBalanceAfter).to.be.equal(treasuryBalanceBefore + serviceFee);
+            await testWith(callerAction);
+            await testWith(signerAction);
         });
 
         it("Should emit the EscrowCreated event", async function () {
-            const fixture = await loadFixture(deployFixture);
-            const { sut, sign, wallets, nonces } = fixture;
+            async function testWith(action: Action) {
+                const fixture = await loadFixture(deployFixture);
+                const {sut,wallets} = fixture;
 
-            const creator = wallets.org.address;
-            const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
-            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+                const serviceFee = await sut.getServiceCharge(wallets.org.address, amount);
 
-            const platformSignature = await sign.create(
-                wallets.platform,
-                escrowReference,
-                creator,
-                wormholeChainId,
-                beneficiary,
-                amount,
-                serviceFee,
-                await nonces.address(creator)
-            );
+                const wormholeChainId = wormholeSource;
+                const beneficiary = ethers.zeroPadValue(wallets.kol.address, 32);
 
-            const amountsStruct = {
-                escrow: amount,
-                serviceFee,
-            };
+                const id = await sut.nextEscrowId();
 
-            const id = await sut.nextEscrowId();
-
-            await expect(
-                sut.createEscrow(
-                    platformSignature,
-                    escrowReference,
-                    creator,
-                    wormholeChainId,
-                    beneficiary,
-                    amountsStruct,
-                    permit,
-                    deadline
+                await expect(
+                    action(
+                        fixture,
+                        wormholeChainId,
+                        beneficiary,
+                        amount,
+                        await getPermit(fixture, amount + serviceFee)
+                    )
                 )
-            )
-                .to.emit(sut, "EscrowCreated")
-                .withArgs(id, escrowReference, creator, wormholeChainId, beneficiary, amount, serviceFee);
+                    .to.emit(sut, "EscrowCreated")
+                    .withArgs(id, escrowReference, wallets.org.address, wormholeChainId, beneficiary, amount);
+            }
+
+            await testWith(callerAction);
+            await testWith(signerAction);
         });
 
         it("Should increment the nextEscrowId", async function () {
-            const fixture = await loadFixture(deployFixture);
-            const { sut, sign, wallets, nonces } = fixture;
+            async function testWith(action: Action) {
+                const fixture = await loadFixture(deployFixture);
+                const {sut,wallets} = fixture;
 
-            const creator = wallets.org.address;
-            const wormholeChainId = wormholeSource;
-            const beneficiary = ethers.zeroPadValue(fixture.wallets.kol.address, 32);
-            const { permit, deadline } = await getPermit(fixture, amount + serviceFee);
+                const serviceFee = await sut.getServiceCharge(wallets.org.address, amount);
 
-            const platformSignature = await sign.create(
-                wallets.platform,
-                escrowReference,
-                creator,
-                wormholeChainId,
-                beneficiary,
-                amount,
-                serviceFee,
-                await nonces.address(creator)
-            );
+                const wormholeChainId = wormholeSource;
+                const beneficiary = ethers.zeroPadValue(wallets.kol.address, 32);
 
-            const amountsStruct = {
-                escrow: amount,
-                serviceFee,
-            };
+                const id = await sut.nextEscrowId();
 
-            const id = await sut.nextEscrowId();
+                await action(
+                    fixture,
+                    wormholeChainId,
+                    beneficiary,
+                    amount,
+                    await getPermit(fixture, amount + serviceFee)
+                );
 
-            await sut.createEscrow(
-                platformSignature,
-                escrowReference,
-                creator,
-                wormholeChainId,
-                beneficiary,
-                amountsStruct,
-                permit,
-                deadline
-            );
+                expect(await sut.nextEscrowId()).to.be.equal(id + 1n);
+            }
 
-            expect(await sut.nextEscrowId()).to.be.equal(id + 1n);
+            await testWith(callerAction);
+            await testWith(signerAction);
         });
     });
 
