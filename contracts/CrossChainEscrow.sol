@@ -53,6 +53,7 @@ contract CrossChainEscrow is Relay {
     // #######################################################################################
 
     // Service Charge
+    uint256 public constant ZERO_CHARGE = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
     uint256 private constant DENOMINATOR = 10000;
     uint256 private constant DEFAULT_NUMERATOR = 1000; // 10%
 
@@ -382,6 +383,11 @@ contract CrossChainEscrow is Relay {
     }
 
     function _serviceCharge(address _user, uint256 _amount) private view returns (uint256) {
-        return ((_feeOverride[_user] > 0 ? _feeOverride[_user] : DEFAULT_NUMERATOR) * _amount) / DENOMINATOR;
+        uint256 overrideCharge = _feeOverride[_user];
+
+        if (overrideCharge == ZERO_CHARGE) return 0;
+        if (overrideCharge > 0) return (overrideCharge * _amount) / DENOMINATOR;
+
+        return (_amount * DEFAULT_NUMERATOR) / DENOMINATOR;
     }
 }
