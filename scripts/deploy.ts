@@ -25,6 +25,8 @@ const wormholeSourceChainId = {
 
 type validChainId = 1 | 11155111 | 8453 | 84532;
 
+const platform: string = "0x9d5CF51655D46054dC2Aaf7dAF84c6473a08F21A";
+
 async function main() {
     const network = await ethers.provider.getNetwork();
     const chainId = network.chainId;
@@ -39,7 +41,7 @@ async function main() {
         usdcAddress[chainIdIndex],
         wormholeRelayerAddress[chainIdIndex],
         wormholeSourceChainId[chainIdIndex],
-        deployer.address,
+        platform,
         deployer.address
     );
 
@@ -59,7 +61,7 @@ async function main() {
         usdcAddress[chainIdIndex],
         wormholeRelayerAddress[chainIdIndex],
         wormholeSourceChainId[chainIdIndex],
-        deployer.address,
+        platform,
         deployer.address,
     ]);
 }
