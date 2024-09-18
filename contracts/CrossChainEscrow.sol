@@ -49,6 +49,7 @@ contract CrossChainEscrow is Relay {
     event DisputeResolved(uint256 indexed escrow_id, uint256 creatorAmount, uint256 beneficiaryAmount);
 
     event EvmAddressElected(bytes32 indexed nonEvmAddress, address electedAddress);
+    event ServiceChargeOverrideSet(address indexed user, uint256 numerator);
 
     // #######################################################################################
 
@@ -210,6 +211,33 @@ contract CrossChainEscrow is Relay {
         _transferToBeneficiary(_escrowId, _amount);
     }
 
+    /// @notice Starts a dispute. Can only be called by the platform.
+    /// @param _escrowId The escrow id.
+    function startDispute(uint256 _escrowId) external onlyExists(_escrowId) onlyPlatform {
+        if (_escrow[_escrowId].allowPlatformResolutionTimestamp != 0) revert AlreadyStarted();
+
+        _escrow[_escrowId].allowPlatformResolutionTimestamp = uint48(block.timestamp) + platformResolutionTimeout;
+
+        emit DisputeStarted(_escrowId, _escrow[_escrowId].allowPlatformResolutionTimestamp);
+    }
+
+    /// @notice Resolves a dispute. Can only be called by the platform. Note, the platform can only resolve a dispute after the platformResolutionTimeout has passed, and they must account for the entire amount. In future this should be replaced by a dao vote.
+    /// @param _escrowId The escrow id.
+    /// @param _creatorAmount The creator amount.
+    /// @param _beneficiaryAmount The beneficiary amount.
+    function resolveDispute(
+        uint256 _escrowId,
+        uint256 _creatorAmount,
+        uint256 _beneficiaryAmount
+    ) external onlyExists(_escrowId) onlyPlatform {
+        if (
+            _escrow[_escrowId].allowPlatformResolutionTimestamp == 0 ||
+            _escrow[_escrowId].allowPlatformResolutionTimestamp > block.timestamp
+        ) revert CannotResolveYet();
+
+        _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
+    }
+
     /// @notice Resolves a dispute amicably. Can be called by anyone but must satisfy two conditions. 1) Both the creator and beneficiary must sign the resolution. 2) The amounts must add up to the escrow amount.
     /// @param _escrowId The escrow id.
     /// @param _creatorSignature The creator signature.
@@ -244,46 +272,20 @@ contract CrossChainEscrow is Relay {
         _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
     }
 
-    /// @notice Starts a dispute. Can only be called by the platform.
-    /// @param _escrowId The escrow id.
-    function startDispute(uint256 _escrowId) external onlyExists(_escrowId) onlyPlatform {
-        if (_escrow[_escrowId].allowPlatformResolutionTimestamp != 0) revert AlreadyStarted();
-
-        _escrow[_escrowId].allowPlatformResolutionTimestamp = uint48(block.timestamp) + platformResolutionTimeout;
-
-        emit DisputeStarted(_escrowId, _escrow[_escrowId].allowPlatformResolutionTimestamp);
-    }
-
-    /// @notice Resolves a dispute. Can only be called by the platform. Note, the platform can only resolve a dispute after the platformResolutionTimeout has passed, and they must account for the entire amount. In future this should be replaced by a dao vote.
-    /// @param _escrowId The escrow id.
-    /// @param _creatorAmount The creator amount.
-    /// @param _beneficiaryAmount The beneficiary amount.
-    function resolveDispute(
-        uint256 _escrowId,
-        uint256 _creatorAmount,
-        uint256 _beneficiaryAmount
-    ) external onlyExists(_escrowId) onlyPlatform {
-        if (
-            _escrow[_escrowId].allowPlatformResolutionTimestamp == 0 ||
-            _escrow[_escrowId].allowPlatformResolutionTimestamp > block.timestamp
-        ) revert CannotResolveYet();
-
-        _resolveDispute(_escrowId, _creatorAmount, _beneficiaryAmount);
-    }
-
     /// @notice Elects an address for a non evm supported chain.
     /// @param _nonEvmAddress The non EVM address.
     /// @param _electedAddress The elected EVM address.
     function setElectedEvmAddress(bytes32 _nonEvmAddress, address _electedAddress) external onlyPlatform {
         _electedAddresses[_nonEvmAddress] = _electedAddress;
         emit EvmAddressElected(_nonEvmAddress, _electedAddress);
-    }
+    } 
 
     /// @notice Overrides the service charge for a user.
     /// @param _user The user.
     /// @param _numerator The numerator.
     function setServiceChargeOverride(address _user, uint256 _numerator) external onlyPlatform {
         _feeOverride[_user] = _numerator;
+        emit ServiceChargeOverrideSet(_user, _numerator);
     }
 
     // #######################################################################################
