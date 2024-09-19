@@ -192,7 +192,7 @@ describe("Relay", function () {
                     .connect(wallets.caller)
                     .multiCallAsSigner([
                         await sign.relayRequest(wallets.signer, data[0], wallets.caller.address, nonce, deadline),
-                        await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce + 1n, deadline),
+                        await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce, deadline),
                     ])
             ).to.be.revertedWithCustomError(sut, "ExpiredSignature");
         });
@@ -213,12 +213,12 @@ describe("Relay", function () {
                     .connect(wallets.caller)
                     .multiCallAsSigner([
                         await sign.relayRequest(wallets.signer, data[0], wallets.caller.address, nonce, deadline),
-                        await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce + 1n, deadline),
+                        await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce, deadline),
                     ])
             ).to.be.revertedWithCustomError(sut, "TestError");
         });
 
-        it("should increment the nonce x times", async function () {
+        it("should increment the nonce only once", async function () {
             const { sut, sign, wallets } = await loadFixture(deployFixture);
 
             const data = [
@@ -233,10 +233,10 @@ describe("Relay", function () {
                 .connect(wallets.caller)
                 .multiCallAsSigner([
                     await sign.relayRequest(wallets.signer, data[0], wallets.caller.address, nonce, deadline),
-                    await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce + 1n, deadline),
+                    await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce, deadline),
                 ]);
 
-            expect(await sut.nonces(wallets.caller.address)).to.equal(nonce + 2n);
+            expect(await sut.nonces(wallets.caller.address)).to.equal(nonce + 1n);
         });
 
         it("should forward the calls as the signer", async function () {
@@ -254,7 +254,7 @@ describe("Relay", function () {
                 .connect(wallets.caller)
                 .multiCallAsSigner([
                     await sign.relayRequest(wallets.signer, data[0], wallets.caller.address, nonce, deadline),
-                    await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce + 1n, deadline),
+                    await sign.relayRequest(wallets.signer, data[1], wallets.caller.address, nonce, deadline),
                 ]);
 
             expect(await sut.getValue(wallets.signer.address)).to.equal(150n);

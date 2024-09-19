@@ -22,14 +22,15 @@ abstract contract Relay is Ownable, Nonces, EIP712 {
     /// @notice Calls another function on this contract, overwriting the `msg.sender` to be the signer.
     /// @param _request The signed relay request.
     function callAsSigner(RelayRequest calldata _request) external {
-        _callAsSigner(_request);
+        _callAsSigner(_request, _useNonce(msg.sender));
     }
 
     /// @notice Calls functions on this contract, overwriting the `msg.sender` to be the signer. Note: Reverts if any call fails.
     /// @param _requests The signed relay requests.
     function multiCallAsSigner(RelayRequest[] calldata _requests) external {
+        uint256 nonce = _useNonce(msg.sender);
         for (uint256 i = 0; i < _requests.length; i++) {
-            _callAsSigner(_requests[i]);
+            _callAsSigner(_requests[i], nonce);
         }
     }
 
@@ -58,15 +59,13 @@ abstract contract Relay is Ownable, Nonces, EIP712 {
 
     // #######################################################################################
 
-    function _callAsSigner(RelayRequest calldata _request) private {
+    function _callAsSigner(RelayRequest calldata _request, uint256 _nonce) private {
         Signature calldata signature = _request.signature;
         bytes calldata requestData = _request.data;
 
         address signer = _recoverSigner(
             signature,
-            keccak256(
-                abi.encode(TYPE_HASH, keccak256(requestData), msg.sender, _useNonce(msg.sender), signature.deadline)
-            )
+            keccak256(abi.encode(TYPE_HASH, keccak256(requestData), msg.sender, _nonce, signature.deadline))
         );
 
         bytes memory data = abi.encodePacked(requestData, signer);
