@@ -1,13 +1,9 @@
-# Sample Hardhat Project
+# Cross Chain Escrow
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a Hardhat Ignition module that deploys that contract.
+This project makes use of Wormhole's Relayer, allowing for automatic attestation of USDC CCTP transactions.
+This allows for cross chain USDC escrow payments without the direct involvement of either party.
 
-Try running some of the following tasks:
+Latest Deployments:
 
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat ignition deploy ./ignition/modules/Lock.ts
-```
+Sepolia: 0x733aAfDC9C8A3d9Ba393D2D5761f20a9Fb7d5884
+BaseSepolia: 0x440F26D5591431f8b66996A0a4a18b06278fEee3
